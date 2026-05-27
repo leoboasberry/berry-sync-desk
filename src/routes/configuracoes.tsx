@@ -8,6 +8,7 @@ import { cn, initialsOf } from "@/lib/utils";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { testChatwootConnection } from "@/lib/chatwoot.functions";
+import { testHubspotConnection } from "@/lib/hubspot.functions";
 
 export const Route = createFileRoute("/configuracoes")({
   head: () => ({ meta: [{ title: "Configurações — Berry" }] }),
@@ -196,18 +197,29 @@ function IntegrationsTab() {
   }
 
   async function testHubspot() {
-    if (!hsToken) {
+    const token = hsToken.trim();
+    if (!token) {
       toast.error("Informe o Private App Token");
       return;
     }
+    const { error: saveErr } = await supabase.from("settings").upsert({
+      id: 1,
+      chatwoot_url: cwUrl,
+      chatwoot_account_id: cwAccount,
+      chatwoot_token: cwToken,
+      hubspot_token: token,
+      updated_at: new Date().toISOString(),
+    });
+    if (saveErr) {
+      toast.error(`Falha ao salvar: ${saveErr.message}`);
+      return;
+    }
     try {
-      const res = await fetch("https://api.hubapi.com/crm/v3/objects/contacts?limit=1", {
-        headers: { Authorization: `Bearer ${hsToken}` },
-      });
-      if (res.ok) toast.success("HubSpot: conexão OK");
-      else toast.error(`HubSpot: erro ${res.status}`);
-    } catch {
-      toast.error("HubSpot: falha de rede");
+      const result = await testHubspotConnection({ data: { token } });
+      if (result.ok) toast.success("HubSpot: conexão OK");
+      else toast.error(`HubSpot: ${result.status || "erro"} ${result.message}`);
+    } catch (e) {
+      toast.error(`HubSpot: ${(e as Error).message}`);
     }
   }
 
