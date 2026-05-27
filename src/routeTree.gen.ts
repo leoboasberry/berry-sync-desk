@@ -10,11 +10,29 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as LigacoesRouteImport } from './routes/ligacoes'
+import { Route as ContatosRouteImport } from './routes/contatos'
+import { Route as ConfiguracoesRouteImport } from './routes/configuracoes'
 import { Route as IndexRouteImport } from './routes/index'
 
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LigacoesRoute = LigacoesRouteImport.update({
+  id: '/ligacoes',
+  path: '/ligacoes',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ContatosRoute = ContatosRouteImport.update({
+  id: '/contatos',
+  path: '/contatos',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ConfiguracoesRoute = ConfiguracoesRouteImport.update({
+  id: '/configuracoes',
+  path: '/configuracoes',
   getParentRoute: () => rootRouteImport,
 } as any)
 const IndexRoute = IndexRouteImport.update({
@@ -25,27 +43,39 @@ const IndexRoute = IndexRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/configuracoes': typeof ConfiguracoesRoute
+  '/contatos': typeof ContatosRoute
+  '/ligacoes': typeof LigacoesRoute
   '/login': typeof LoginRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/configuracoes': typeof ConfiguracoesRoute
+  '/contatos': typeof ContatosRoute
+  '/ligacoes': typeof LigacoesRoute
   '/login': typeof LoginRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/configuracoes': typeof ConfiguracoesRoute
+  '/contatos': typeof ContatosRoute
+  '/ligacoes': typeof LigacoesRoute
   '/login': typeof LoginRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/login'
+  fullPaths: '/' | '/configuracoes' | '/contatos' | '/ligacoes' | '/login'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/login'
-  id: '__root__' | '/' | '/login'
+  to: '/' | '/configuracoes' | '/contatos' | '/ligacoes' | '/login'
+  id: '__root__' | '/' | '/configuracoes' | '/contatos' | '/ligacoes' | '/login'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  ConfiguracoesRoute: typeof ConfiguracoesRoute
+  ContatosRoute: typeof ContatosRoute
+  LigacoesRoute: typeof LigacoesRoute
   LoginRoute: typeof LoginRoute
 }
 
@@ -56,6 +86,27 @@ declare module '@tanstack/react-router' {
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/ligacoes': {
+      id: '/ligacoes'
+      path: '/ligacoes'
+      fullPath: '/ligacoes'
+      preLoaderRoute: typeof LigacoesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/contatos': {
+      id: '/contatos'
+      path: '/contatos'
+      fullPath: '/contatos'
+      preLoaderRoute: typeof ContatosRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/configuracoes': {
+      id: '/configuracoes'
+      path: '/configuracoes'
+      fullPath: '/configuracoes'
+      preLoaderRoute: typeof ConfiguracoesRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/': {
@@ -70,6 +121,9 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  ConfiguracoesRoute: ConfiguracoesRoute,
+  ContatosRoute: ContatosRoute,
+  LigacoesRoute: LigacoesRoute,
   LoginRoute: LoginRoute,
 }
 export const routeTree = rootRouteImport
