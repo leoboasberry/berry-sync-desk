@@ -166,13 +166,28 @@ function IntegrationsTab() {
   }
 
   async function testChatwoot() {
-    if (!cwUrl || !cwAccount || !cwToken) {
+    const url = cwUrl.trim().replace(/\/$/, "");
+    const account = cwAccount.trim();
+    const token = cwToken.trim();
+    if (!url || !account || !token) {
       toast.error("Preencha URL, Account ID e Token");
       return;
     }
+    const { error: saveErr } = await supabase.from("settings").upsert({
+      id: 1,
+      chatwoot_url: url,
+      chatwoot_account_id: account,
+      chatwoot_token: token,
+      hubspot_token: hsToken,
+      updated_at: new Date().toISOString(),
+    });
+    if (saveErr) {
+      toast.error(`Falha ao salvar: ${saveErr.message}`);
+      return;
+    }
     try {
-      const res = await fetch(`${cwUrl}/api/v1/accounts/${cwAccount}/conversations?status=open&page=1`, {
-        headers: { api_access_token: cwToken },
+      const res = await fetch(`${url}/api/v1/profile`, {
+        headers: { api_access_token: token },
       });
       if (res.ok) toast.success("Chatwoot: conexão OK");
       else toast.error(`Chatwoot: erro ${res.status}`);
