@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { cn, initialsOf } from "@/lib/utils";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
+import { testChatwootConnection } from "@/lib/chatwoot.functions";
 
 export const Route = createFileRoute("/configuracoes")({
   head: () => ({ meta: [{ title: "Configurações — Berry" }] }),
