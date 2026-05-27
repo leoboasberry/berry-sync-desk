@@ -187,13 +187,11 @@ function IntegrationsTab() {
       return;
     }
     try {
-      const res = await fetch(`${url}/api/v1/profile`, {
-        headers: { api_access_token: token },
-      });
-      if (res.ok) toast.success("Chatwoot: conexão OK");
-      else toast.error(`Chatwoot: erro ${res.status}`);
-    } catch {
-      toast.error("Chatwoot: falha de rede");
+      const result = await testChatwootConnection({ data: { url, token } });
+      if (result.ok) toast.success("Chatwoot: conexão OK");
+      else toast.error(`Chatwoot: ${result.status || "erro"} ${result.message}`);
+    } catch (e) {
+      toast.error(`Chatwoot: ${(e as Error).message}`);
     }
   }
 
