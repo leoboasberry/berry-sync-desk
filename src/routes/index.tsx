@@ -25,7 +25,7 @@ import {
   type HsField,
 } from "@/lib/hubspot.functions";
 import { supabase } from "@/integrations/supabase/client";
-import { Search, Send, Loader2, UserPlus, Play, Pause, ZoomIn, Paperclip, Smile, X, LayoutTemplate, ChevronLeft } from "lucide-react";
+import { Search, Send, Loader2, UserPlus, Play, Pause, ZoomIn, Paperclip, Smile, X, LayoutTemplate, ChevronLeft, Mic, Square } from "lucide-react";
 
 const EMOJI_ONLY_RE = /^(\p{Emoji_Presentation}|\p{Extended_Pictographic}|️|‍|\s)+$/u;
 function isEmojiOnly(text: string) {
@@ -190,6 +190,8 @@ function AtendimentoPage() {
   const [myRole, setMyRole] = useState<"admin" | "agent" | null>(null);
   const [myChatwootAgentId, setMyChatwootAgentId] = useState<number | null>(null);
   const [attachFile, setAttachFile] = useState<AttachFile | null>(null);
+  const [recording, setRecording] = useState(false);
+  const [recordingTime, setRecordingTime] = useState(0);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [visibleFields, setVisibleFields] = useState<HsField[]>(DEFAULT_HS_FIELDS);
   const [showTemplatePicker, setShowTemplatePicker] = useState(false);
@@ -214,6 +216,10 @@ function AtendimentoPage() {
   const emojiPickerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const templatePickerRef = useRef<HTMLDivElement>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const recordingCancelledRef = useRef(false);
 
   // Refs para o Realtime ter acesso aos valores atuais sem recriar a subscription
   const tabRef = useRef(tab);
@@ -363,6 +369,61 @@ function AtendimentoPage() {
     if (!file) return;
     setAttachFile({ file, previewUrl: file.type.startsWith("image/") ? URL.createObjectURL(file) : null });
     e.target.value = "";
+  }
+
+  async function startRecording() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = [
+        "audio/ogg;codecs=opus",
+        "audio/webm;codecs=opus",
+        "audio/webm",
+        "audio/mp4",
+      ].find((t) => MediaRecorder.isTypeSupported(t));
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      audioChunksRef.current = [];
+      recordingCancelledRef.current = false;
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data);
+      };
+      recorder.onstop = () => {
+        stream.getTracks().forEach((t) => t.stop());
+        if (recordingTimerRef.current) {
+          clearInterval(recordingTimerRef.current);
+          recordingTimerRef.current = null;
+        }
+        if (recordingCancelledRef.current) {
+          audioChunksRef.current = [];
+          return;
+        }
+        const blobType = mimeType ?? "audio/webm";
+        const blob = new Blob(audioChunksRef.current, { type: blobType });
+        const ext = blobType.includes("ogg") ? "ogg" : blobType.includes("mp4") ? "m4a" : "webm";
+        const file = new File([blob], `audio-${Date.now()}.${ext}`, { type: blobType });
+        setAttachFile({ file, previewUrl: URL.createObjectURL(blob) });
+      };
+      mediaRecorderRef.current = recorder;
+      recorder.start();
+      setRecording(true);
+      setRecordingTime(0);
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingTime((t) => t + 1);
+      }, 1000);
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  function stopRecording() {
+    recordingCancelledRef.current = false;
+    mediaRecorderRef.current?.stop();
+    setRecording(false);
+  }
+
+  function cancelRecording() {
+    recordingCancelledRef.current = true;
+    mediaRecorderRef.current?.stop();
+    setRecording(false);
   }
 
   async function handleSend() {
@@ -717,13 +778,25 @@ function AtendimentoPage() {
 
             <div className="border-t border-[#e5e5e5] px-6 py-4">
               {/* File preview */}
-              {attachFile && (
+              {attachFile && attachFile.file.type.startsWith("audio/") ? (
+                <div className="mb-3 flex items-center gap-2.5 rounded-xl border border-[#e5e5e5] bg-[#f8f8f8] px-3 py-2">
+                  <div className="flex-1">
+                    <AudioPlayer src={attachFile.previewUrl!} fromAgent />
+                  </div>
+                  <button
+                    onClick={() => { if (attachFile.previewUrl) URL.revokeObjectURL(attachFile.previewUrl); setAttachFile(null); }}
+                    className="shrink-0 text-[#999] hover:text-[#090909]"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              ) : attachFile ? (
                 <div className="mb-3 flex items-center gap-2.5 rounded-xl border border-[#e5e5e5] bg-[#f8f8f8] px-3 py-2">
                   {attachFile.previewUrl ? (
                     <img src={attachFile.previewUrl} className="h-10 w-10 rounded-lg object-cover" alt="" />
                   ) : (
                     <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-[#e5e5e5] text-lg">
-                      {attachFile.file.type.startsWith("audio/") ? "🎤" : "📄"}
+                      📄
                     </div>
                   )}
                   <span className="flex-1 truncate text-xs text-[#666]">{attachFile.file.name}</span>
@@ -731,8 +804,30 @@ function AtendimentoPage() {
                     <X className="h-4 w-4" />
                   </button>
                 </div>
-              )}
+              ) : null}
 
+              {recording ? (
+                <div className="flex items-center gap-3 rounded-xl border border-[#e5e5e5] bg-[#f8f8f8] px-4 py-2.5">
+                  <span className="h-2.5 w-2.5 shrink-0 animate-pulse rounded-full bg-red-500" />
+                  <span className="text-sm text-[#090909]">Gravando…</span>
+                  <span className="font-mono text-sm text-[#666]">{formatAudioTime(recordingTime)}</span>
+                  <div className="flex-1" />
+                  <button
+                    onClick={cancelRecording}
+                    title="Cancelar"
+                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-[#888] hover:bg-[#f0f0f0] hover:text-[#090909]"
+                  >
+                    <X className="h-[18px] w-[18px]" />
+                  </button>
+                  <button
+                    onClick={stopRecording}
+                    title="Parar e revisar"
+                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#090909] text-white hover:bg-[#090909]/90"
+                  >
+                    <Square className="h-4 w-4" />
+                  </button>
+                </div>
+              ) : (
               <div className="flex items-center gap-1.5">
                 {/* Attach */}
                 <button
@@ -740,6 +835,15 @@ function AtendimentoPage() {
                   className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-[#888] hover:bg-[#f0f0f0] hover:text-[#090909]"
                 >
                   <Paperclip className="h-[18px] w-[18px]" />
+                </button>
+
+                {/* Record audio */}
+                <button
+                  onClick={startRecording}
+                  title="Gravar áudio"
+                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-[#888] hover:bg-[#f0f0f0] hover:text-[#090909]"
+                >
+                  <Mic className="h-[18px] w-[18px]" />
                 </button>
 
                 {/* Emoji picker */}
@@ -905,6 +1009,7 @@ function AtendimentoPage() {
                   {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                 </Button>
               </div>
+              )}
 
               <input
                 ref={fileInputRef}
