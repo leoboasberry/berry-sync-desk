@@ -239,16 +239,23 @@ export const startConversationWithTemplate = createServerFn({ method: "POST" })
     const s = await getChatwootSettings();
     const inboxId = await getWhatsAppInboxId(s);
 
-    // Search contact by phone
+    // Normalize phone: strip spaces/dashes/parens, ensure leading +
+    const normalizedPhone = (() => {
+      const digitsAndPlus = data.phone.replace(/[^\d+]/g, "");
+      const pure = digitsAndPlus.replace(/\+/g, "");
+      return `+${pure}`;
+    })();
+
+    // Search contact by phone — handle Chatwoot v2 (payload: [...]) and v3 (payload: { contacts: [...] })
     const searchRes = await fetch(
-      `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/contacts/search?q=${encodeURIComponent(data.phone)}&include_contacts=true`,
+      `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/contacts/search?q=${encodeURIComponent(normalizedPhone)}&include_contacts=true`,
       { headers: { api_access_token: s.chatwoot_token! } }
     );
     let contactId: number | null = null;
     if (searchRes.ok) {
       const j = await searchRes.json();
-      const found = j.payload?.[0];
-      if (found) contactId = found.id;
+      const found = j.payload?.contacts?.[0] ?? (Array.isArray(j.payload) ? j.payload[0] : null);
+      if (found?.id) contactId = found.id;
     }
 
     // Create contact if not found
@@ -258,13 +265,19 @@ export const startConversationWithTemplate = createServerFn({ method: "POST" })
         {
           method: "POST",
           headers: { api_access_token: s.chatwoot_token!, "Content-Type": "application/json" },
-          body: JSON.stringify({ name: data.contactName, phone_number: data.phone }),
+          body: JSON.stringify({ name: data.contactName, phone_number: normalizedPhone }),
         }
       );
-      if (!createRes.ok) throw new Error(`Chatwoot create contact error: ${createRes.status}`);
+      if (!createRes.ok) {
+        const errBody = await createRes.text().catch(() => "");
+        throw new Error(`Chatwoot create contact error: ${createRes.status} — ${errBody.slice(0, 200)}`);
+      }
       const created = await createRes.json();
-      contactId = created.id;
+      // Handle both flat ({id: N}) and nested ({payload: {id: N}}) responses
+      contactId = created.id ?? created.payload?.id ?? null;
     }
+
+    if (!contactId) throw new Error("Não foi possível obter o ID do contato no Chatwoot");
 
     // Create conversation
     const convRes = await fetch(
@@ -275,7 +288,10 @@ export const startConversationWithTemplate = createServerFn({ method: "POST" })
         body: JSON.stringify({ inbox_id: inboxId, contact_id: contactId }),
       }
     );
-    if (!convRes.ok) throw new Error(`Chatwoot create conversation error: ${convRes.status}`);
+    if (!convRes.ok) {
+      const errBody = await convRes.text().catch(() => "");
+      throw new Error(`Chatwoot create conversation error: ${convRes.status} — ${errBody.slice(0, 300)}`);
+    }
     const conv = await convRes.json();
 
     // Send template message
