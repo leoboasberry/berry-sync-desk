@@ -75,7 +75,7 @@ export function AppHeader() {
     >
       <div className="flex items-center gap-8">
         <Link to="/" className="flex items-center">
-          <BerryLogo height={22} />
+          <BerryLogo height={22} white />
         </Link>
         <nav className="flex items-center gap-6">
           {ALL_NAV_ITEMS
