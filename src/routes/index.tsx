@@ -20,6 +20,7 @@ import {
   getHubSpotVisibleFields,
   getHubSpotContactNotes,
   createHubSpotNote,
+  getHubSpotOwners,
   DEFAULT_HS_FIELDS,
   type HsField,
 } from "@/lib/hubspot.functions";
@@ -1212,6 +1213,24 @@ function LeadPanel({
   const [newNote, setNewNote] = useState("");
   const [savingNote, setSavingNote] = useState(false);
 
+  // HubSpot owners map: id → display name
+  const [ownersMap, setOwnersMap] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    const needsOwner = visibleFields.some((f) => f.name === "hubspot_owner_id");
+    if (!needsOwner) return;
+    getHubSpotOwners()
+      .then((owners) => {
+        const map: Record<string, string> = {};
+        for (const o of owners) {
+          const fullName = [o.firstName, o.lastName].filter(Boolean).join(" ") || o.email;
+          map[String(o.id)] = fullName;
+        }
+        setOwnersMap(map);
+      })
+      .catch(console.error);
+  }, []);
+
   // Assignment
   const [chatwootAgents, setChatwootAgents] = useState<{ id: number; name: string; email: string; availability_status: string }[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState<string>("");
@@ -1299,7 +1318,11 @@ function LeadPanel({
             {visibleFields.map((f) => {
               const value = hubContact.properties?.[f.name];
               if (!value) return null;
-              return <Field key={f.name} label={f.label} value={formatHsValue(String(value))} />;
+              const display =
+                f.name === "hubspot_owner_id"
+                  ? (ownersMap[String(value)] ?? String(value))
+                  : formatHsValue(String(value));
+              return <Field key={f.name} label={f.label} value={display} />;
             })}
           </div>
         </div>

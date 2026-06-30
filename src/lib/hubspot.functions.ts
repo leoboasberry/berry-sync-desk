@@ -250,6 +250,18 @@ export const createHubSpotNote = createServerFn({ method: "POST" })
     return await res.json();
   });
 
+export const getHubSpotOwners = createServerFn({ method: "POST" })
+  .handler(async () => {
+    const token = await getHsToken();
+    const res = await fetch(
+      "https://api.hubapi.com/crm/v3/owners?limit=200",
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (!res.ok) return [] as Array<{ id: string; firstName: string; lastName: string; email: string }>;
+    const json = await res.json();
+    return (json.results ?? []) as Array<{ id: string; firstName: string; lastName: string; email: string }>;
+  });
+
 export const getHubSpotProperties = createServerFn({ method: "POST" })
   .handler(async () => {
     const token = await getHsToken();
