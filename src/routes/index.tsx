@@ -13,6 +13,7 @@ import {
   getChatwootTemplates,
   getChatwootAgents,
   assignChatwootConversation,
+  startConversationWithTemplate,
 } from "@/lib/chatwoot.functions";
 import {
   getHubSpotContactByPhone,
@@ -197,6 +198,17 @@ function AtendimentoPage() {
   const [selectedTemplate, setSelectedTemplate] = useState<any | null>(null);
   const [draftIsTemplate, setDraftIsTemplate] = useState(false);
   const [templateVars, setTemplateVars] = useState<string[]>([]);
+
+  // New conversation modal
+  const [newConvModal, setNewConvModal] = useState(false);
+  const [newConvStep, setNewConvStep] = useState<"contact" | "template" | "vars">("contact");
+  const [newConvName, setNewConvName] = useState("");
+  const [newConvPhone, setNewConvPhone] = useState("");
+  const [newConvTemplate, setNewConvTemplate] = useState<any | null>(null);
+  const [newConvVars, setNewConvVars] = useState<string[]>([]);
+  const [newConvTplSearch, setNewConvTplSearch] = useState("");
+  const [newConvLoading, setNewConvLoading] = useState(false);
+  const [newConvError, setNewConvError] = useState("");
 
   const emojiPickerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -408,6 +420,70 @@ function AtendimentoPage() {
     });
   }, [templatesList, templateSearch]);
 
+  const filteredNewConvTemplates = useMemo(() => {
+    const q = newConvTplSearch.toLowerCase();
+    return templatesList.filter((t) => {
+      if (!q) return true;
+      return t.name.toLowerCase().includes(q) || getTplBody(t).toLowerCase().includes(q);
+    });
+  }, [templatesList, newConvTplSearch]);
+
+  async function ensureTemplatesLoaded() {
+    if (templatesList.length > 0 || templatesLoading) return;
+    setTemplatesLoading(true);
+    try {
+      const { templates } = await getChatwootTemplates();
+      setTemplatesList(templates.filter((t: any) => t.status === "APPROVED"));
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setTemplatesLoading(false);
+    }
+  }
+
+  function openNewConvModal() {
+    setNewConvModal(true);
+    setNewConvStep("contact");
+    setNewConvName("");
+    setNewConvPhone("");
+    setNewConvTemplate(null);
+    setNewConvVars([]);
+    setNewConvTplSearch("");
+    setNewConvError("");
+  }
+
+  async function handleStartNewConversation() {
+    if (!newConvTemplate) return;
+    setNewConvLoading(true);
+    setNewConvError("");
+    try {
+      const { data: u } = await supabase.auth.getUser();
+      let body = getTplBody(newConvTemplate);
+      newConvVars.forEach((v, i) => { body = body.replaceAll(`{{${i + 1}}}`, v); });
+      await startConversationWithTemplate({
+        data: {
+          phone: newConvPhone,
+          contactName: newConvName,
+          templateName: newConvTemplate.name,
+          templateParams: newConvVars,
+          language: newConvTemplate.language,
+          category: newConvTemplate.category,
+          templateBody: body,
+          assigneeEmail: u.user?.email,
+        },
+      });
+      setNewConvModal(false);
+      const updated = await getChatwootConversations({ data: { status: "open" } });
+      setConversations(updated);
+      if (tab !== "open") setTab("open");
+      if (updated.length > 0) setActiveId(updated[0].id);
+    } catch (e: any) {
+      setNewConvError(e?.message ?? "Erro ao iniciar conversa");
+    } finally {
+      setNewConvLoading(false);
+    }
+  }
+
   async function openTemplatePicker() {
     setShowTemplatePicker((v) => !v);
     setSelectedTemplate(null);
@@ -440,14 +516,23 @@ function AtendimentoPage() {
       {/* Left: conversation list */}
       <aside className="flex w-[300px] flex-col border-r border-[#e5e5e5]" style={{ background: "#f8f8f8" }}>
         <div className="border-b border-[#e5e5e5] p-3">
-          <div className="relative">
-            <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[#666]" />
-            <Input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Buscar conversas"
-              className="h-9 bg-white pl-8"
-            />
+          <div className="flex items-center gap-2">
+            <div className="relative flex-1">
+              <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[#666]" />
+              <Input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Buscar conversas"
+                className="h-9 bg-white pl-8"
+              />
+            </div>
+            <button
+              onClick={openNewConvModal}
+              title="Nova conversa"
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[#e5e5e5] bg-white text-[#666] transition-colors hover:border-[#090909] hover:text-[#090909]"
+            >
+              <UserPlus className="h-4 w-4" />
+            </button>
           </div>
         </div>
         <div className="flex gap-5 border-b border-[#e5e5e5] px-3">
@@ -849,6 +934,207 @@ function AtendimentoPage() {
           />
         ) : null}
       </aside>
+
+      {/* New conversation modal */}
+      {newConvModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+          <div className="relative flex max-h-[85vh] w-[480px] flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+
+            {/* Header */}
+            <div className="flex items-center justify-between border-b border-[#e5e5e5] px-6 py-4">
+              <div>
+                <p className="text-xs text-[#999]">Iniciar conversa via template</p>
+                <h2 className="text-base font-semibold text-[#090909]">
+                  {newConvStep === "contact" && "Novo contato"}
+                  {newConvStep === "template" && "Selecionar template"}
+                  {newConvStep === "vars" && (newConvTemplate?.name ?? "Confirmar envio")}
+                </h2>
+              </div>
+              <button
+                onClick={() => setNewConvModal(false)}
+                className="flex h-8 w-8 items-center justify-center rounded-full text-[#999] hover:bg-[#f0f0f0] hover:text-[#090909]"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {/* Step 1: contact info */}
+            {newConvStep === "contact" && (
+              <div className="space-y-4 p-6">
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-semibold uppercase tracking-wider text-[#666]">Nome</label>
+                  <input
+                    autoFocus
+                    value={newConvName}
+                    onChange={(e) => setNewConvName(e.target.value)}
+                    placeholder="Nome completo do contato"
+                    className="h-10 w-full rounded-lg border border-[#e5e5e5] px-3 text-sm focus:outline-none focus:ring-1 focus:ring-[#090909]"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-semibold uppercase tracking-wider text-[#666]">Telefone</label>
+                  <input
+                    value={newConvPhone}
+                    onChange={(e) => setNewConvPhone(e.target.value)}
+                    placeholder="+55 11 99999-9999"
+                    type="tel"
+                    className="h-10 w-full rounded-lg border border-[#e5e5e5] px-3 text-sm focus:outline-none focus:ring-1 focus:ring-[#090909]"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && newConvName.trim() && newConvPhone.trim()) {
+                        setNewConvStep("template");
+                        ensureTemplatesLoaded();
+                      }
+                    }}
+                  />
+                </div>
+                <div className="flex justify-end pt-2">
+                  <button
+                    disabled={!newConvName.trim() || !newConvPhone.trim()}
+                    onClick={() => { setNewConvStep("template"); ensureTemplatesLoaded(); }}
+                    className="rounded-lg bg-[#090909] px-5 py-2 text-sm font-medium text-white hover:bg-[#090909]/90 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Próximo →
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Step 2: template picker */}
+            {newConvStep === "template" && (
+              <div className="flex flex-1 flex-col overflow-hidden">
+                <div className="border-b border-[#e5e5e5] p-3">
+                  <div className="relative">
+                    <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#999]" />
+                    <input
+                      autoFocus
+                      value={newConvTplSearch}
+                      onChange={(e) => setNewConvTplSearch(e.target.value)}
+                      placeholder="Buscar template…"
+                      className="w-full rounded-lg border border-[#e5e5e5] py-1.5 pl-8 pr-3 text-sm focus:outline-none focus:ring-1 focus:ring-[#090909]"
+                    />
+                  </div>
+                </div>
+                <div className="flex-1 overflow-y-auto">
+                  {templatesLoading ? (
+                    <div className="flex items-center justify-center py-16">
+                      <Loader2 className="h-4 w-4 animate-spin text-[#999]" />
+                    </div>
+                  ) : filteredNewConvTemplates.length === 0 ? (
+                    <p className="py-16 text-center text-sm text-[#999]">
+                      {templatesList.length === 0 ? "Nenhum template aprovado." : "Nenhum resultado."}
+                    </p>
+                  ) : (
+                    filteredNewConvTemplates.map((t) => {
+                      const body = getTplBody(t);
+                      const numVars = countTplVars(body);
+                      return (
+                        <button
+                          key={t.name + t.language}
+                          onClick={() => {
+                            setNewConvTemplate(t);
+                            setNewConvVars(Array(Math.max(numVars, 0)).fill(""));
+                            setNewConvStep("vars");
+                          }}
+                          className="w-full border-b border-[#f0f0f0] px-5 py-3.5 text-left transition-colors hover:bg-[#f8f8f8] last:border-0"
+                        >
+                          <div className="mb-0.5 flex items-center justify-between gap-2">
+                            <span className="text-xs font-semibold text-[#090909]">{t.name}</span>
+                            <span className="shrink-0 rounded-full bg-[#f0f0f0] px-2 py-0.5 text-[10px] text-[#666]">{t.language}</span>
+                          </div>
+                          <p className="line-clamp-2 text-xs text-[#666]">{body}</p>
+                          {numVars > 0 && (
+                            <p className="mt-0.5 text-[10px] text-[#aaa]">{numVars} variável{numVars > 1 ? "is" : ""}</p>
+                          )}
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+                <div className="border-t border-[#e5e5e5] px-5 py-3">
+                  <button
+                    onClick={() => setNewConvStep("contact")}
+                    className="flex items-center gap-1 text-xs text-[#666] hover:text-[#090909]"
+                  >
+                    <ChevronLeft className="h-3.5 w-3.5" />
+                    Voltar
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Step 3: variables + confirm */}
+            {newConvStep === "vars" && newConvTemplate && (
+              <div className="flex flex-1 flex-col overflow-hidden">
+                <div className="flex-1 space-y-4 overflow-y-auto p-5">
+                  {/* Contact summary */}
+                  <div className="flex gap-8 rounded-lg bg-[#f8f8f8] px-4 py-3 text-sm">
+                    <div>
+                      <div className="text-[10px] font-semibold uppercase tracking-wider text-[#999]">Nome</div>
+                      <div className="text-[#090909]">{newConvName}</div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] font-semibold uppercase tracking-wider text-[#999]">Telefone</div>
+                      <div className="text-[#090909]">{newConvPhone}</div>
+                    </div>
+                  </div>
+
+                  {/* Template body */}
+                  <div className="whitespace-pre-wrap rounded-lg border border-[#e5e5e5] bg-[#f8f8f8] px-4 py-3 text-xs text-[#090909]">
+                    {getTplBody(newConvTemplate)}
+                  </div>
+
+                  {/* Variable fields */}
+                  {newConvVars.length > 0 && (
+                    <div className="space-y-3">
+                      {newConvVars.map((v, i) => (
+                        <div key={i} className="space-y-1">
+                          <label className="text-[11px] font-semibold uppercase tracking-wider text-[#666]">
+                            Variável {i + 1}
+                          </label>
+                          <input
+                            autoFocus={i === 0}
+                            value={v}
+                            onChange={(e) => {
+                              const next = [...newConvVars];
+                              next[i] = e.target.value;
+                              setNewConvVars(next);
+                            }}
+                            placeholder={`{{${i + 1}}}`}
+                            className="h-9 w-full rounded-md border border-[#e5e5e5] px-3 text-sm focus:outline-none focus:ring-1 focus:ring-[#090909]"
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {newConvError && (
+                    <p className="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600">{newConvError}</p>
+                  )}
+                </div>
+
+                <div className="flex items-center justify-between border-t border-[#e5e5e5] px-5 py-3">
+                  <button
+                    onClick={() => { setNewConvStep("template"); setNewConvTemplate(null); }}
+                    className="flex items-center gap-1 text-xs text-[#666] hover:text-[#090909]"
+                  >
+                    <ChevronLeft className="h-3.5 w-3.5" />
+                    Voltar
+                  </button>
+                  <button
+                    disabled={newConvLoading || newConvVars.some((v) => !v.trim())}
+                    onClick={handleStartNewConversation}
+                    className="flex items-center gap-2 rounded-lg bg-[#090909] px-5 py-2 text-sm font-medium text-white hover:bg-[#090909]/90 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {newConvLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                    Iniciar conversa
+                  </button>
+                </div>
+              </div>
+            )}
+
+          </div>
+        </div>
+      )}
     </div>
   );
 }

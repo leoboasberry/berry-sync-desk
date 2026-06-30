@@ -246,19 +246,36 @@ export const startConversationWithTemplate = createServerFn({ method: "POST" })
       return `+${pure}`;
     })();
 
-    // Search contact by phone — handle Chatwoot v2 (payload: [...]) and v3 (payload: { contacts: [...] })
-    const searchRes = await fetch(
-      `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/contacts/search?q=${encodeURIComponent(normalizedPhone)}&include_contacts=true`,
-      { headers: { api_access_token: s.chatwoot_token! } }
-    );
-    let contactId: number | null = null;
-    if (searchRes.ok) {
-      const j = await searchRes.json();
-      const found = j.payload?.contacts?.[0] ?? (Array.isArray(j.payload) ? j.payload[0] : null);
-      if (found?.id) contactId = found.id;
+    const digits = normalizedPhone.replace(/\D/g, "");
+    const last9 = digits.slice(-9);
+
+    // Helper: extract contact id from Chatwoot search response (v2 and v3 formats)
+    function extractContactId(j: any): number | null {
+      const found =
+        j.payload?.contacts?.[0] ??
+        (Array.isArray(j.payload) ? j.payload[0] : null) ??
+        j.results?.[0] ??
+        null;
+      return found?.id ?? null;
     }
 
-    // Create contact if not found
+    // Helper: search contacts by query term
+    async function searchContact(q: string): Promise<number | null> {
+      const r = await fetch(
+        `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/contacts/search?q=${encodeURIComponent(q)}&include_contacts=true`,
+        { headers: { api_access_token: s.chatwoot_token! } }
+      );
+      if (!r.ok) return null;
+      return extractContactId(await r.json());
+    }
+
+    // 1st: search by normalized phone
+    let contactId: number | null = await searchContact(normalizedPhone);
+
+    // 2nd: search by last 9 digits if not found (phone stored in different format)
+    if (!contactId) contactId = await searchContact(last9);
+
+    // 3rd: create contact if still not found
     if (!contactId) {
       const createRes = await fetch(
         `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/contacts`,
@@ -268,16 +285,29 @@ export const startConversationWithTemplate = createServerFn({ method: "POST" })
           body: JSON.stringify({ name: data.contactName, phone_number: normalizedPhone }),
         }
       );
-      if (!createRes.ok) {
-        const errBody = await createRes.text().catch(() => "");
-        throw new Error(`Chatwoot create contact error: ${createRes.status} — ${errBody.slice(0, 200)}`);
-      }
-      const created = await createRes.json();
-      // Handle both flat ({id: N}) and nested ({payload: {id: N}}) responses
-      contactId = created.id ?? created.payload?.id ?? null;
-    }
 
-    if (!contactId) throw new Error("Não foi possível obter o ID do contato no Chatwoot");
+      if (createRes.ok) {
+        const created = await createRes.json();
+        // Try all known response formats: flat, {payload:{id}}, {payload:{contact:{id}}}
+        contactId =
+          created.id ??
+          created.payload?.id ??
+          created.payload?.contact?.id ??
+          created.contact?.id ??
+          null;
+      }
+
+      // If create failed (e.g. 422 = already exists) or returned no ID, search again
+      if (!contactId) {
+        contactId = await searchContact(normalizedPhone);
+        if (!contactId) contactId = await searchContact(last9);
+      }
+
+      if (!contactId) {
+        const errBody = createRes.ok ? "" : await createRes.text().catch(() => "");
+        throw new Error(`Não foi possível criar/encontrar o contato no Chatwoot${errBody ? ` (${createRes.status}: ${errBody.slice(0, 150)})` : ""}`);
+      }
+    }
 
     // Create conversation
     const convRes = await fetch(
