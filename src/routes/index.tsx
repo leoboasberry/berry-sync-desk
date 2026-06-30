@@ -581,12 +581,11 @@ function AtendimentoPage() {
           <>
             <header className="flex items-center justify-between border-b border-[#e5e5e5] px-6 py-3">
               <div className="flex items-center gap-3">
-                <div
-                  className="flex h-9 w-9 items-center justify-center rounded-full text-sm font-semibold"
-                  style={{ background: "#00e186", color: "#090909" }}
-                >
-                  {initialsOf(active.meta?.sender?.name ?? "?")}
-                </div>
+                <ContactAvatar
+                  name={active.meta?.sender?.name ?? "?"}
+                  src={active.meta?.sender?.avatar_url}
+                  text="text-sm"
+                />
                 <div>
                   <div className="text-sm font-semibold text-[#090909]">
                     {active.meta?.sender?.name ?? "Desconhecido"}
@@ -1140,6 +1139,41 @@ function AtendimentoPage() {
   );
 }
 
+function ContactAvatar({
+  name,
+  src,
+  size = "h-9 w-9",
+  text = "text-xs",
+  onClick,
+}: {
+  name: string;
+  src?: string | null;
+  size?: string;
+  text?: string;
+  onClick?: () => void;
+}) {
+  const [err, setErr] = useState(false);
+  const showImg = !!src && !err;
+  return (
+    <div
+      onClick={onClick}
+      className={cn(
+        "shrink-0 overflow-hidden rounded-full flex items-center justify-center font-semibold",
+        size,
+        text,
+        onClick && showImg ? "cursor-pointer ring-2 ring-transparent hover:ring-[#00e186] transition-all" : ""
+      )}
+      style={!showImg ? { background: "#00e186", color: "#090909" } : undefined}
+    >
+      {showImg ? (
+        <img src={src} alt={name} className="h-full w-full object-cover" onError={() => setErr(true)} />
+      ) : (
+        initialsOf(name)
+      )}
+    </div>
+  );
+}
+
 function ConversationRow({ conv, active, onClick }: { conv: any; active: boolean; onClick: () => void }) {
   const name = conv.meta?.sender?.name ?? "Desconhecido";
   const preview = conv.last_message?.content ?? "";
@@ -1156,12 +1190,7 @@ function ConversationRow({ conv, active, onClick }: { conv: any; active: boolean
         active ? "bg-white" : "hover:bg-white/60"
       )}
     >
-      <div
-        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-xs font-semibold"
-        style={{ background: "#00e186", color: "#090909" }}
-      >
-        {initialsOf(name)}
-      </div>
+      <ContactAvatar name={name} src={conv.meta?.sender?.avatar_url} />
       <div className="min-w-0 flex-1">
         <div className="flex items-center justify-between gap-2">
           <span className="truncate text-sm font-semibold text-[#090909]">{name}</span>
@@ -1206,8 +1235,10 @@ function LeadPanel({
   const name = conv.meta?.sender?.name ?? "Desconhecido";
   const phone = conv.meta?.sender?.phone_number ?? "";
   const email = conv.meta?.sender?.email;
+  const avatarUrl = conv.meta?.sender?.avatar_url as string | null | undefined;
   const hubspotUrl = `https://app.hubspot.com/contacts/search?query=${encodeURIComponent(phone || name)}`;
 
+  const [lightboxOpen, setLightboxOpen] = useState(false);
   const [notes, setNotes] = useState<any[]>([]);
   const [notesLoading, setNotesLoading] = useState(false);
   const [newNote, setNewNote] = useState("");
@@ -1297,12 +1328,43 @@ function LeadPanel({
     <div className="space-y-3">
       <div className="rounded-[10px] border border-[#e5e5e5] bg-white p-4">
         <div className="label-uppercase mb-3">Contato</div>
-        <div className="space-y-2.5 text-sm">
-          <Field label="Nome" value={name} />
-          {phone && <Field label="Telefone" value={phone} />}
-          {email && <Field label="E-mail" value={email} />}
+        <div className="mb-3 flex items-center gap-3">
+          <ContactAvatar
+            name={name}
+            src={avatarUrl}
+            size="h-14 w-14"
+            text="text-xl"
+            onClick={avatarUrl ? () => setLightboxOpen(true) : undefined}
+          />
+          <div className="min-w-0">
+            <div className="truncate font-semibold text-[#090909]">{name}</div>
+            {phone && <div className="truncate text-xs text-[#666]">{phone}</div>}
+            {email && <div className="truncate text-xs text-[#666]">{email}</div>}
+          </div>
         </div>
       </div>
+
+      {/* Avatar lightbox */}
+      {lightboxOpen && avatarUrl && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm"
+          onClick={() => setLightboxOpen(false)}
+        >
+          <div className="relative" onClick={(e) => e.stopPropagation()}>
+            <img
+              src={avatarUrl}
+              alt={name}
+              className="max-h-[80vh] max-w-[80vw] rounded-2xl object-contain shadow-2xl"
+            />
+            <button
+              onClick={() => setLightboxOpen(false)}
+              className="absolute -right-3 -top-3 flex h-8 w-8 items-center justify-center rounded-full bg-white text-[#090909] shadow-lg hover:bg-[#f0f0f0]"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      )}
 
       {hubLoading ? (
         <div className="rounded-[10px] border border-[#e5e5e5] bg-white p-4">
