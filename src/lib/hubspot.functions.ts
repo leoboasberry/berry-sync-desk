@@ -75,12 +75,16 @@ export const searchHubSpotContacts = createServerFn({ method: "POST" })
     return (json.results ?? []) as any[];
   });
 
+const HS_CONTACT_PROPS = [
+  "firstname", "lastname", "company", "phone", "email",
+  "hs_lead_status", "notes_last_updated", "createdate",
+];
+
 export const getMyHubSpotContacts = createServerFn({ method: "POST" })
   .inputValidator((data: { ownerEmail: string }) => data)
   .handler(async ({ data }) => {
     const token = await getHsToken();
 
-    // Resolve HubSpot owner ID from email
     const ownerRes = await fetch(
       `https://api.hubapi.com/crm/v3/owners?email=${encodeURIComponent(data.ownerEmail)}&limit=1`,
       { headers: { Authorization: `Bearer ${token}` } }
@@ -90,21 +94,18 @@ export const getMyHubSpotContacts = createServerFn({ method: "POST" })
     const owner = ownerJson.results?.[0];
     if (!owner) return [] as any[];
 
-    // Paginate through all contacts assigned to this owner (max 200/page)
     const all: any[] = [];
     let after: string | undefined;
-
     do {
       const body: Record<string, any> = {
         filterGroups: [{
           filters: [{ propertyName: "hubspot_owner_id", operator: "EQ", value: String(owner.id) }],
         }],
-        properties: ["firstname", "lastname", "company", "phone", "email", "hs_lead_status", "notes_last_updated"],
+        properties: HS_CONTACT_PROPS,
         limit: 200,
         sorts: [{ propertyName: "createdate", direction: "DESCENDING" }],
       };
       if (after) body.after = after;
-
       const res = await fetch("https://api.hubapi.com/crm/v3/objects/contacts/search", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
@@ -115,7 +116,31 @@ export const getMyHubSpotContacts = createServerFn({ method: "POST" })
       all.push(...(json.results ?? []));
       after = json.paging?.next?.after;
     } while (after);
+    return all;
+  });
 
+export const getAllHubSpotContacts = createServerFn({ method: "POST" })
+  .handler(async () => {
+    const token = await getHsToken();
+    const all: any[] = [];
+    let after: string | undefined;
+    do {
+      const body: Record<string, any> = {
+        properties: HS_CONTACT_PROPS,
+        limit: 200,
+        sorts: [{ propertyName: "createdate", direction: "DESCENDING" }],
+      };
+      if (after) body.after = after;
+      const res = await fetch("https://api.hubapi.com/crm/v3/objects/contacts/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(`HubSpot error: ${res.status}`);
+      const json = await res.json();
+      all.push(...(json.results ?? []));
+      after = json.paging?.next?.after;
+    } while (after);
     return all;
   });
 

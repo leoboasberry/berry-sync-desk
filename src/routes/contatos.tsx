@@ -1,13 +1,20 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { initialsOf, timeAgo } from "@/lib/utils";
-import { searchHubSpotContacts, getMyHubSpotContacts } from "@/lib/hubspot.functions";
+import { initialsOf } from "@/lib/utils";
+import {
+  searchHubSpotContacts,
+  getMyHubSpotContacts,
+  getAllHubSpotContacts,
+} from "@/lib/hubspot.functions";
 import { getChatwootTemplates, startConversationWithTemplate } from "@/lib/chatwoot.functions";
 import { supabase } from "@/integrations/supabase/client";
-import { Search, Users, Loader2, MessageSquarePlus, X, ChevronRight } from "lucide-react";
+import {
+  Search, Users, Loader2, MessageSquarePlus, X, ChevronRight,
+  ChevronUp, ChevronDown, ChevronsUpDown, Filter,
+} from "lucide-react";
 
 export const Route = createFileRoute("/contatos")({
   head: () => ({ meta: [{ title: "Contatos — Berry" }] }),
@@ -33,6 +40,14 @@ function fillTemplate(text: string, vars: string[]): string {
 function getBodyText(t: any): string {
   return t.components?.find((c: any) => c.type === "BODY")?.text ?? t.body ?? "";
 }
+
+function fmtDate(iso: string | undefined): string {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric" });
+}
+
+type SortField = "name" | "createdate" | "notes_last_updated";
+type SortDir = "asc" | "desc";
 
 // --- Template picker modal ---
 
@@ -165,7 +180,7 @@ function TemplateModal({
                 <p className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-[#999]">
                   {selected.name}
                 </p>
-                <p className="text-sm text-[#090909]">
+                <p className="whitespace-pre-wrap text-sm text-[#090909]">
                   {fillTemplate(getBodyText(selected), vars) || "—"}
                 </p>
               </div>
@@ -214,6 +229,78 @@ function TemplateModal({
   );
 }
 
+// --- Sortable column header ---
+
+function SortTh({
+  label,
+  field,
+  sortField,
+  sortDir,
+  onSort,
+  className,
+}: {
+  label: string;
+  field: SortField;
+  sortField: SortField;
+  sortDir: SortDir;
+  onSort: (f: SortField) => void;
+  className?: string;
+}) {
+  const active = field === sortField;
+  return (
+    <th
+      onClick={() => onSort(field)}
+      className={`cursor-pointer select-none px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-[#666] hover:text-[#090909] ${className ?? ""}`}
+    >
+      <div className="flex items-center gap-1">
+        {label}
+        {active ? (
+          sortDir === "asc" ? (
+            <ChevronUp className="h-3 w-3 text-[#090909]" />
+          ) : (
+            <ChevronDown className="h-3 w-3 text-[#090909]" />
+          )
+        ) : (
+          <ChevronsUpDown className="h-3 w-3 opacity-30" />
+        )}
+      </div>
+    </th>
+  );
+}
+
+function PlainTh({ children, className }: { children: React.ReactNode; className?: string }) {
+  return (
+    <th className={`px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-[#666] ${className ?? ""}`}>
+      {children}
+    </th>
+  );
+}
+
+// --- Status badge ---
+
+const STATUS_COLORS: Record<string, { bg: string; text: string }> = {
+  NEW: { bg: "#e8f5e9", text: "#2e7d32" },
+  OPEN: { bg: "#e3f2fd", text: "#1565c0" },
+  IN_PROGRESS: { bg: "#fff8e1", text: "#f57f17" },
+  OPEN_DEAL: { bg: "#f3e5f5", text: "#6a1b9a" },
+  CONNECTED: { bg: "#e0f7fa", text: "#006064" },
+  UNQUALIFIED: { bg: "#fce4ec", text: "#880e4f" },
+  ATTEMPTED_TO_CONTACT: { bg: "#fff3e0", text: "#e65100" },
+  BAD_TIMING: { bg: "#f5f5f5", text: "#616161" },
+};
+
+function StatusBadge({ status }: { status: string }) {
+  const color = STATUS_COLORS[status] ?? { bg: "#f0f0f0", text: "#444" };
+  return (
+    <span
+      className="inline-block rounded-full px-2 py-0.5 text-[11px] font-medium"
+      style={{ background: color.bg, color: color.text }}
+    >
+      {status}
+    </span>
+  );
+}
+
 // --- Main page ---
 
 function ContatosPage() {
@@ -225,6 +312,12 @@ function ContatosPage() {
   const [loadingSearch, setLoadingSearch] = useState(false);
   const [convModal, setConvModal] = useState<any | null>(null);
   const [agentEmail, setAgentEmail] = useState("");
+  const [myRole, setMyRole] = useState<"admin" | "agent" | null>(null);
+
+  // Sort & filter
+  const [sortField, setSortField] = useState<SortField>("createdate");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [statusFilter, setStatusFilter] = useState("");
 
   useEffect(() => {
     (async () => {
@@ -232,15 +325,23 @@ function ContatosPage() {
       if (!u.user) { setLoadingMy(false); return; }
       const { data: agent } = await supabase
         .from("agents")
-        .select("hubspot_email, email")
+        .select("hubspot_email, role")
         .eq("id", u.user.id)
         .maybeSingle();
-      const ownerEmail = (agent as any)?.hubspot_email || u.user.email || "";
+      const role = ((agent as any)?.role ?? "agent") as "admin" | "agent";
+      setMyRole(role);
       setAgentEmail(u.user.email || "");
-      if (!ownerEmail) { setLoadingMy(false); return; }
+
       try {
-        const result = await getMyHubSpotContacts({ data: { ownerEmail } });
-        setMyContacts(result);
+        if (role === "admin") {
+          const result = await getAllHubSpotContacts();
+          setMyContacts(result);
+        } else {
+          const ownerEmail = (agent as any)?.hubspot_email || u.user.email || "";
+          if (!ownerEmail) return;
+          const result = await getMyHubSpotContacts({ data: { ownerEmail } });
+          setMyContacts(result);
+        }
       } catch (e) {
         console.error(e);
       } finally {
@@ -261,112 +362,203 @@ function ContatosPage() {
     return () => clearTimeout(timer);
   }, [q]);
 
-  const contacts = q.trim() ? searchResults : myContacts;
+  const rawContacts = q.trim() ? searchResults : myContacts;
   const loading = q.trim() ? loadingSearch : loadingMy;
-  const title = q.trim() ? "Busca de contatos" : "Meus contatos";
+
+  // Unique status values for filter
+  const statusOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const c of myContacts) {
+      const s = c.properties?.hs_lead_status;
+      if (s) set.add(s);
+    }
+    return Array.from(set).sort();
+  }, [myContacts]);
+
+  // Sort + filter
+  function handleSort(field: SortField) {
+    if (field === sortField) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortField(field);
+      setSortDir("desc");
+    }
+  }
+
+  const contacts = useMemo(() => {
+    let list = [...rawContacts];
+    if (statusFilter) {
+      list = list.filter((c) => c.properties?.hs_lead_status === statusFilter);
+    }
+    list.sort((a, b) => {
+      if (sortField === "name") {
+        const na = [a.properties?.firstname, a.properties?.lastname].filter(Boolean).join(" ").toLowerCase();
+        const nb = [b.properties?.firstname, b.properties?.lastname].filter(Boolean).join(" ").toLowerCase();
+        return sortDir === "asc" ? na.localeCompare(nb, "pt") : nb.localeCompare(na, "pt");
+      }
+      const va = a.properties?.[sortField] ?? "";
+      const vb = b.properties?.[sortField] ?? "";
+      const cmp = va < vb ? -1 : va > vb ? 1 : 0;
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+    return list;
+  }, [rawContacts, statusFilter, sortField, sortDir]);
+
+  const isFiltered = !!statusFilter;
 
   return (
-    <div className="mx-auto max-w-7xl px-6 py-6">
-      <h1 className="mb-6 text-[22px] font-bold text-[#090909]">{title}</h1>
+    <div className="flex h-full flex-col overflow-hidden">
+      {/* Top bar */}
+      <div className="shrink-0 border-b border-[#e5e5e5] px-6 py-4">
+        <div className="flex items-center justify-between gap-4">
+          <h1 className="text-[18px] font-bold text-[#090909]">
+            Contatos
+            {!loading && (
+              <span className="ml-2 text-[14px] font-normal text-[#999]">
+                {contacts.length}
+              </span>
+            )}
+          </h1>
 
-      <div className="relative mb-4">
-        <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#666]" />
-        <Input
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="Buscar por nome, empresa ou telefone…"
-          className="h-11 pl-10"
-        />
+          <div className="flex flex-1 items-center gap-2 max-w-2xl">
+            {/* Search */}
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#666]" />
+              <Input
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                placeholder="Buscar por nome, empresa ou telefone…"
+                className="h-9 pl-9 text-sm"
+              />
+            </div>
+
+            {/* Status filter */}
+            <div className="relative">
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                className={`h-9 rounded-md border px-3 pr-8 text-sm focus:outline-none focus:ring-1 focus:ring-[#090909] appearance-none ${
+                  isFiltered
+                    ? "border-[#090909] bg-[#090909] text-white"
+                    : "border-[#e5e5e5] bg-white text-[#090909]"
+                }`}
+              >
+                <option value="">Status CRM</option>
+                {statusOptions.map((s) => (
+                  <option key={s} value={s}>{s}</option>
+                ))}
+              </select>
+              <Filter className={`pointer-events-none absolute right-2.5 top-1/2 h-3 w-3 -translate-y-1/2 ${isFiltered ? "text-white" : "text-[#666]"}`} />
+            </div>
+
+            {isFiltered && (
+              <button
+                onClick={() => setStatusFilter("")}
+                className="flex items-center gap-1 text-[12px] text-[#666] hover:text-[#090909]"
+              >
+                <X className="h-3 w-3" /> Limpar
+              </button>
+            )}
+          </div>
+        </div>
       </div>
 
-      <div className="overflow-hidden rounded-[10px] border border-[#e5e5e5] bg-white">
-        <table className="w-full text-sm">
-          <thead className="border-b border-[#e5e5e5] bg-[#f8f8f8]">
-            <tr>
-              <Th>Nome</Th>
-              <Th>Empresa</Th>
-              <Th>Telefone</Th>
-              <Th>E-mail</Th>
-              <Th>Status CRM</Th>
-              <Th>Último contato</Th>
-              <th className="w-28 px-4 py-3" />
-            </tr>
-          </thead>
-          <tbody>
-            {loading ? (
+      {/* Table */}
+      <div className="flex-1 overflow-auto px-6 py-4">
+        <div className="overflow-hidden rounded-[10px] border border-[#e5e5e5] bg-white">
+          <table className="w-full min-w-[900px] text-sm">
+            <thead className="border-b border-[#e5e5e5] bg-[#f8f8f8]">
               <tr>
-                <td colSpan={7} className="px-4 py-16 text-center text-[#666]">
-                  <Loader2 className="mx-auto mb-3 h-6 w-6 animate-spin text-[#c0c0c0]" />
-                </td>
+                <SortTh label="Nome" field="name" sortField={sortField} sortDir={sortDir} onSort={handleSort} className="w-[200px]" />
+                <PlainTh className="w-[140px]">Empresa</PlainTh>
+                <PlainTh className="w-[140px]">Telefone</PlainTh>
+                <PlainTh className="w-[200px]">E-mail</PlainTh>
+                <PlainTh className="w-[120px]">Status CRM</PlainTh>
+                <SortTh label="Criado em" field="createdate" sortField={sortField} sortDir={sortDir} onSort={handleSort} className="w-[120px]" />
+                <SortTh label="Últ. contato" field="notes_last_updated" sortField={sortField} sortDir={sortDir} onSort={handleSort} className="w-[120px]" />
+                <PlainTh className="w-[90px]">{""}</PlainTh>
               </tr>
-            ) : contacts.length === 0 ? (
-              <tr>
-                <td colSpan={7} className="px-4 py-16 text-center text-[#666]">
-                  <Users className="mx-auto mb-3 h-10 w-10 text-[#c0c0c0]" />
-                  {q.trim()
-                    ? "Nenhum contato encontrado."
-                    : "Você não tem contatos atribuídos na HubSpot."}
-                </td>
-              </tr>
-            ) : (
-              contacts.map((c) => {
-                const firstName = c.properties?.firstname ?? "";
-                const lastName = c.properties?.lastname ?? "";
-                const name = [firstName, lastName].filter(Boolean).join(" ") || "Sem nome";
-                const company = c.properties?.company ?? "—";
-                const phone = c.properties?.phone ?? "—";
-                const email = c.properties?.email ?? "—";
-                const status = c.properties?.hs_lead_status ?? "—";
-                const lastContact = c.properties?.notes_last_updated;
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr>
+                  <td colSpan={8} className="px-4 py-16 text-center text-[#666]">
+                    <Loader2 className="mx-auto mb-3 h-6 w-6 animate-spin text-[#c0c0c0]" />
+                  </td>
+                </tr>
+              ) : contacts.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="px-4 py-16 text-center text-[#666]">
+                    <Users className="mx-auto mb-3 h-10 w-10 text-[#c0c0c0]" />
+                    <p className="text-sm">
+                      {q.trim()
+                        ? "Nenhum contato encontrado."
+                        : isFiltered
+                        ? "Nenhum contato com esse status."
+                        : myRole === "agent"
+                        ? "Você não tem contatos atribuídos no HubSpot."
+                        : "Nenhum contato encontrado."}
+                    </p>
+                  </td>
+                </tr>
+              ) : (
+                contacts.map((c) => {
+                  const firstName = c.properties?.firstname ?? "";
+                  const lastName = c.properties?.lastname ?? "";
+                  const name = [firstName, lastName].filter(Boolean).join(" ") || "Sem nome";
+                  const company = c.properties?.company ?? "—";
+                  const phone = c.properties?.phone ?? "—";
+                  const email = c.properties?.email ?? "—";
+                  const status = c.properties?.hs_lead_status;
+                  const createDate = c.properties?.createdate;
+                  const lastContact = c.properties?.notes_last_updated;
 
-                return (
-                  <tr
-                    key={c.id}
-                    className="border-b border-[#e5e5e5] last:border-0 hover:bg-[#fafafa]"
-                  >
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        <div
-                          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold"
-                          style={{ background: "#00e186", color: "#090909" }}
-                        >
-                          {initialsOf(name)}
+                  return (
+                    <tr
+                      key={c.id}
+                      className="border-b border-[#e5e5e5] last:border-0 hover:bg-[#fafafa]"
+                    >
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <div
+                            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold"
+                            style={{ background: "#00e186", color: "#090909" }}
+                          >
+                            {initialsOf(name)}
+                          </div>
+                          <span className="truncate font-medium text-[#090909]" title={name}>{name}</span>
                         </div>
-                        <span className="font-medium text-[#090909]">{name}</span>
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 text-[#090909]">{company}</td>
-                    <td className="px-4 py-3 text-[#666]">{phone}</td>
-                    <td className="px-4 py-3 text-[#666]">{email}</td>
-                    <td className="px-4 py-3">
-                      {status !== "—" ? (
-                        <span className="rounded-full bg-[#f0f0f0] px-2 py-0.5 text-[11px] font-medium text-[#444]">
-                          {status}
-                        </span>
-                      ) : (
-                        <span className="text-[#999]">—</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-[#666]">
-                      {lastContact ? `${timeAgo(lastContact)} atrás` : "—"}
-                    </td>
-                    <td className="px-4 py-3">
-                      {phone !== "—" && (
-                        <button
-                          onClick={() => setConvModal(c)}
-                          className="flex items-center gap-1.5 rounded-lg border border-[#e5e5e5] px-2.5 py-1.5 text-[12px] font-medium text-[#090909] transition-colors hover:border-[#090909] hover:bg-[#090909] hover:text-white"
-                        >
-                          <MessageSquarePlus className="h-3.5 w-3.5" />
-                          Iniciar
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })
-            )}
-          </tbody>
-        </table>
+                      </td>
+                      <td className="px-4 py-3 max-w-[140px]">
+                        <span className="block truncate text-[#090909]" title={company}>{company}</span>
+                      </td>
+                      <td className="px-4 py-3 text-[#666] whitespace-nowrap">{phone}</td>
+                      <td className="px-4 py-3 max-w-[200px]">
+                        <span className="block truncate text-[#666]" title={email}>{email}</span>
+                      </td>
+                      <td className="px-4 py-3">
+                        {status ? <StatusBadge status={status} /> : <span className="text-[#999]">—</span>}
+                      </td>
+                      <td className="px-4 py-3 whitespace-nowrap text-[#666]">{fmtDate(createDate)}</td>
+                      <td className="px-4 py-3 whitespace-nowrap text-[#666]">{fmtDate(lastContact)}</td>
+                      <td className="px-4 py-3">
+                        {phone !== "—" && (
+                          <button
+                            onClick={() => setConvModal(c)}
+                            className="flex items-center gap-1.5 rounded-lg border border-[#e5e5e5] px-2.5 py-1.5 text-[12px] font-medium text-[#090909] transition-colors hover:border-[#090909] hover:bg-[#090909] hover:text-white whitespace-nowrap"
+                          >
+                            <MessageSquarePlus className="h-3.5 w-3.5" />
+                            Iniciar
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       {convModal && (
@@ -381,13 +573,5 @@ function ContatosPage() {
         />
       )}
     </div>
-  );
-}
-
-function Th({ children }: { children: React.ReactNode }) {
-  return (
-    <th className="px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-[#666]">
-      {children}
-    </th>
   );
 }
