@@ -25,7 +25,7 @@ import {
   type HsField,
 } from "@/lib/hubspot.functions";
 import { supabase } from "@/integrations/supabase/client";
-import { Search, Send, ExternalLink, Loader2, UserPlus, Play, Pause, ZoomIn, Paperclip, Smile, X, LayoutTemplate, ChevronLeft } from "lucide-react";
+import { Search, Send, Loader2, UserPlus, Play, Pause, ZoomIn, Paperclip, Smile, X, LayoutTemplate, ChevronLeft } from "lucide-react";
 
 const EMOJI_ONLY_RE = /^(\p{Emoji_Presentation}|\p{Extended_Pictographic}|️|‍|\s)+$/u;
 function isEmojiOnly(text: string) {
@@ -1236,7 +1236,6 @@ function LeadPanel({
   const phone = conv.meta?.sender?.phone_number ?? "";
   const email = conv.meta?.sender?.email;
   const avatarUrl = conv.meta?.sender?.avatar_url as string | null | undefined;
-  const hubspotUrl = `https://app.hubspot.com/contacts/search?query=${encodeURIComponent(phone || name)}`;
 
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [notes, setNotes] = useState<any[]>([]);
@@ -1493,14 +1492,6 @@ function LeadPanel({
         )}
       </div>
 
-      <Button
-        variant="outline"
-        className="w-full"
-        onClick={() => window.open(hubspotUrl, "_blank")}
-      >
-        <ExternalLink className="mr-2 h-3.5 w-3.5" />
-        Ver no HubSpot
-      </Button>
     </div>
   );
 }
