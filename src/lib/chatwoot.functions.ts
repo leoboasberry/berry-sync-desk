@@ -309,41 +309,60 @@ export const startConversationWithTemplate = createServerFn({ method: "POST" })
       }
     }
 
-    // Create contact_inbox so Chatwoot has a source_id (phone) to send WhatsApp messages
-    let contactInboxId: number | null = null;
-    const ciRes = await fetch(
-      `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/contacts/${contactId}/contact_inboxes`,
-      {
-        method: "POST",
-        headers: { api_access_token: s.chatwoot_token!, "Content-Type": "application/json" },
-        body: JSON.stringify({ inbox_id: inboxId }),
-      }
+    // Reuse an existing open/pending conversation with this contact in this inbox, if any,
+    // instead of creating a duplicate one.
+    let conv: { id: number } | null = null;
+    const existingRes = await fetch(
+      `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/contacts/${contactId}/conversations`,
+      { headers: { api_access_token: s.chatwoot_token! } }
     );
-    if (ciRes.ok) {
-      const ci = await ciRes.json();
-      contactInboxId = ci.payload?.id ?? ci.id ?? null;
+    if (existingRes.ok) {
+      const existingJson = await existingRes.json();
+      const existingConvs: any[] = existingJson.payload ?? [];
+      const reusable = existingConvs
+        .filter((c) => c.inbox_id === inboxId && (c.status === "open" || c.status === "pending"))
+        .sort((a, b) => (b.last_activity_at ?? 0) - (a.last_activity_at ?? 0))[0];
+      if (reusable) conv = { id: reusable.id };
     }
 
-    // Create conversation
-    const convBody: Record<string, any> = { inbox_id: inboxId, contact_id: contactId };
-    if (contactInboxId) convBody.contact_inbox_id = contactInboxId;
-    const convRes = await fetch(
-      `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/conversations`,
-      {
-        method: "POST",
-        headers: { api_access_token: s.chatwoot_token!, "Content-Type": "application/json" },
-        body: JSON.stringify(convBody),
+    if (!conv) {
+      // Create contact_inbox so Chatwoot has a source_id (phone) to send WhatsApp messages
+      let contactInboxId: number | null = null;
+      const ciRes = await fetch(
+        `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/contacts/${contactId}/contact_inboxes`,
+        {
+          method: "POST",
+          headers: { api_access_token: s.chatwoot_token!, "Content-Type": "application/json" },
+          body: JSON.stringify({ inbox_id: inboxId }),
+        }
+      );
+      if (ciRes.ok) {
+        const ci = await ciRes.json();
+        contactInboxId = ci.payload?.id ?? ci.id ?? null;
       }
-    );
-    if (!convRes.ok) {
-      const errBody = await convRes.text().catch(() => "");
-      throw new Error(`Chatwoot create conversation error: ${convRes.status} — ${errBody.slice(0, 300)}`);
+
+      // Create conversation
+      const convBody: Record<string, any> = { inbox_id: inboxId, contact_id: contactId };
+      if (contactInboxId) convBody.contact_inbox_id = contactInboxId;
+      const convRes = await fetch(
+        `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/conversations`,
+        {
+          method: "POST",
+          headers: { api_access_token: s.chatwoot_token!, "Content-Type": "application/json" },
+          body: JSON.stringify(convBody),
+        }
+      );
+      if (!convRes.ok) {
+        const errBody = await convRes.text().catch(() => "");
+        throw new Error(`Chatwoot create conversation error: ${convRes.status} — ${errBody.slice(0, 300)}`);
+      }
+      conv = await convRes.json();
     }
-    const conv = await convRes.json();
+    const conversationId = conv!.id;
 
     // Send template message
     const msgRes = await fetch(
-      `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/conversations/${conv.id}/messages`,
+      `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/conversations/${conversationId}/messages`,
       {
         method: "POST",
         headers: { api_access_token: s.chatwoot_token!, "Content-Type": "application/json" },
@@ -378,7 +397,7 @@ export const startConversationWithTemplate = createServerFn({ method: "POST" })
         const match = agents.find((a) => a.email === data.assigneeEmail);
         if (match) {
           await fetch(
-            `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/conversations/${conv.id}/assignments`,
+            `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/conversations/${conversationId}/assignments`,
             {
               method: "POST",
               headers: { api_access_token: s.chatwoot_token!, "Content-Type": "application/json" },
@@ -389,7 +408,7 @@ export const startConversationWithTemplate = createServerFn({ method: "POST" })
       }
     }
 
-    return { conversationId: conv.id as number };
+    return { conversationId };
   });
 
 export const sendChatwootAttachment = createServerFn({ method: "POST" })
