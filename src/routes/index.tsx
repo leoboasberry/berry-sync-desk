@@ -318,6 +318,16 @@ function AtendimentoPage() {
     [displayedConversations, search]
   );
 
+  // If role=agent and the selected conversation is not in the filtered list, fix the selection
+  useEffect(() => {
+    if (myRole !== "agent" || myChatwootAgentId === null) return;
+    if (activeId === null) return;
+    const isAllowed = displayedConversations.some((c) => c.id === activeId);
+    if (!isAllowed) {
+      setActiveId(displayedConversations[0]?.id ?? null);
+    }
+  }, [displayedConversations, myRole, myChatwootAgentId]);
+
   const active = conversations.find((c) => c.id === activeId) ?? null;
 
   const displayMessages = useMemo(
