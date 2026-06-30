@@ -354,7 +354,10 @@ export const startConversationWithTemplate = createServerFn({ method: "POST" })
             name: data.templateName,
             category: data.category,
             language: data.language,
-            processed_params: data.templateParams,
+            // Chatwoot requires a hash {1: val, 2: val}, not an array
+            processed_params: Object.fromEntries(
+              data.templateParams.map((v, i) => [String(i + 1), v])
+            ),
           },
         }),
       }
