@@ -1435,14 +1435,6 @@ function LeadPanel({
         </div>
       )}
 
-      <div className="rounded-[10px] border border-[#e5e5e5] bg-white p-4">
-        <div className="label-uppercase mb-3">Canal</div>
-        <div className="space-y-2.5 text-sm">
-          <Field label="Caixa de entrada" value={conv.inbox_id ? `Inbox #${conv.inbox_id}` : "—"} />
-          <Field label="Conversa" value={`#${conv.id}`} />
-        </div>
-      </div>
-
       {/* Atribuição */}
       <div className="rounded-[10px] border border-[#e5e5e5] bg-white p-4">
         <div className="label-uppercase mb-3">Atribuição</div>
