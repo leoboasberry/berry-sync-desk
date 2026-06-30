@@ -460,6 +460,18 @@ function GestaoPage() {
     }),
   [groups]);
 
+  // Build assignee options from conversation data (Chatwoot IDs, not Supabase UUIDs)
+  const assigneeOptions = useMemo(() => {
+    const map = new Map<string, string>(); // chatwoot_id_str -> name
+    for (const c of conversations) {
+      const a = c.meta?.assignee;
+      if (a?.id) map.set(String(a.id), a.name ?? "Desconhecido");
+    }
+    return Array.from(map.entries())
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => a.name.localeCompare(b.name, "pt"));
+  }, [conversations]);
+
   const activeFilterCount = [filterToday, filterWaiting, filterSLA, filterUnassigned, !!filterSDR].filter(Boolean).length;
 
   function clearFilters() {
@@ -553,7 +565,7 @@ function GestaoPage() {
           >
             <option value="">Todos os SDRs</option>
             <option value="__unassigned__">Sem responsável</option>
-            {agents.map(a => (
+            {assigneeOptions.map(a => (
               <option key={a.id} value={a.id}>{a.name}</option>
             ))}
           </select>
