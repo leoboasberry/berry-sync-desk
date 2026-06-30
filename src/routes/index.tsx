@@ -25,7 +25,30 @@ import {
   type HsField,
 } from "@/lib/hubspot.functions";
 import { supabase } from "@/integrations/supabase/client";
-import { Search, Send, Loader2, UserPlus, Play, Pause, ZoomIn, Paperclip, Smile, X, LayoutTemplate, ChevronLeft, Mic, Square } from "lucide-react";
+import { Search, Send, Loader2, UserPlus, Play, Pause, ZoomIn, Paperclip, Smile, X, LayoutTemplate, ChevronLeft, Mic, Square, Volume2, VolumeX } from "lucide-react";
+
+function playNotificationSound() {
+  const Ctx = window.AudioContext ?? (window as any).webkitAudioContext;
+  if (!Ctx) return;
+  const ctx = new Ctx() as AudioContext;
+  const t = ctx.currentTime;
+
+  // Two-tone chime: A5 → C#6
+  [{ freq: 880, start: t, end: t + 0.18 }, { freq: 1108, start: t + 0.12, end: t + 0.32 }].forEach(({ freq, start, end }) => {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.type = "sine";
+    osc.frequency.value = freq;
+    gain.gain.setValueAtTime(0, start);
+    gain.gain.linearRampToValueAtTime(0.25, start + 0.015);
+    gain.gain.exponentialRampToValueAtTime(0.001, end);
+    osc.start(start);
+    osc.stop(end);
+  });
+  setTimeout(() => ctx.close(), 500);
+}
 
 const EMOJI_ONLY_RE = /^(\p{Emoji_Presentation}|\p{Extended_Pictographic}|️|‍|\s)+$/u;
 function isEmojiOnly(text: string) {
@@ -233,6 +256,14 @@ function AtendimentoPage() {
   const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const recordingCancelledRef = useRef(false);
 
+  const [soundEnabled, setSoundEnabled] = useState(() =>
+    localStorage.getItem("berry_sound") !== "off"
+  );
+  const soundEnabledRef = useRef(soundEnabled);
+  soundEnabledRef.current = soundEnabled;
+  const lastSentRef = useRef<number>(0);
+  const prevMessagesRef = useRef<any[]>([]);
+
   // Refs para o Realtime ter acesso aos valores atuais sem recriar a subscription
   const tabRef = useRef(tab);
   tabRef.current = tab;
@@ -246,14 +277,35 @@ function AtendimentoPage() {
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "chatwoot_events" },
-        () => {
+        (event) => {
+          const isMessageCreated = (event.new as any)?.event_type === "message_created";
+
           getChatwootConversations({ data: { status: tabRef.current } })
             .then(setConversations)
             .catch(console.error);
+
           if (activeIdRef.current) {
             getChatwootMessages({ data: { conversationId: activeIdRef.current } })
-              .then(setMessages)
+              .then((newMsgs) => {
+                if (isMessageCreated && soundEnabledRef.current) {
+                  const prevIds = new Set(prevMessagesRef.current.map((m: any) => m.id));
+                  const recentlySentOwn = Date.now() - lastSentRef.current < 3000;
+                  const hasNewIncoming = newMsgs.some(
+                    (m: any) => !prevIds.has(m.id) && m.message_type === 0
+                  );
+                  if (hasNewIncoming && !recentlySentOwn) {
+                    playNotificationSound();
+                  }
+                }
+                prevMessagesRef.current = newMsgs;
+                setMessages(newMsgs);
+              })
               .catch(console.error);
+          } else if (isMessageCreated && soundEnabledRef.current) {
+            // Message arrived in a non-active conversation — play if not recently sent
+            if (Date.now() - lastSentRef.current >= 3000) {
+              playNotificationSound();
+            }
           }
         }
       )
@@ -449,6 +501,8 @@ function AtendimentoPage() {
     if (!activeId) return;
     const text = draft.trim();
     if (!text && !attachFile) return;
+
+    lastSentRef.current = Date.now();
 
     const prefix = agentName && !draftIsTemplate ? `*${agentName}*\n` : "";
     const content = text ? `${prefix}${text}` : "";
@@ -675,6 +729,17 @@ function AtendimentoPage() {
                 <StatusBadge status={active.status} />
               </div>
               <div className="flex items-center gap-2">
+                <button
+                  onClick={() => {
+                    const next = !soundEnabled;
+                    setSoundEnabled(next);
+                    localStorage.setItem("berry_sound", next ? "on" : "off");
+                  }}
+                  title={soundEnabled ? "Silenciar notificações" : "Ativar notificações"}
+                  className="rounded-md p-1.5 text-[#666] dark:text-[#909090] hover:bg-[#f0f0f0] dark:hover:bg-[#252525] hover:text-[#090909] dark:hover:text-[#e8e8e8]"
+                >
+                  {soundEnabled ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
+                </button>
                 {active.status !== "resolved" && (
                   <Button
                     size="sm"
