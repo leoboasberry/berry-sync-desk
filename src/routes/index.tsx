@@ -295,6 +295,7 @@ function AtendimentoPage() {
   const audioChunksRef = useRef<Blob[]>([]);
   const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const recordingCancelledRef = useRef(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const [soundEnabled, setSoundEnabled] = useState(() =>
     localStorage.getItem("berry_sound") !== "off"
@@ -492,6 +493,13 @@ function AtendimentoPage() {
   }, [displayedConversations, myRole, myChatwootAgentId]);
 
   const active = conversations.find((c) => c.id === activeId) ?? null;
+
+  // Scroll to bottom when messages load or conversation changes
+  useEffect(() => {
+    if (!loadingMsgs) {
+      messagesEndRef.current?.scrollIntoView({ behavior: "instant" });
+    }
+  }, [activeId, loadingMsgs]);
 
   const displayMessages = useMemo(() => {
     function mapMsg(m: any, sourceConvId?: number) {
@@ -1032,6 +1040,7 @@ function AtendimentoPage() {
                   );
                 })
               )}
+              <div ref={messagesEndRef} />
             </div>
 
             <div className="border-t border-[#e5e5e5] dark:border-[#2a2a2a] px-6 py-4">
