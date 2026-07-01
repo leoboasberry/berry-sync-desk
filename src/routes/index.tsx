@@ -25,7 +25,7 @@ import {
   type HsField,
 } from "@/lib/hubspot.functions";
 import { supabase } from "@/integrations/supabase/client";
-import { Search, Send, Loader2, UserPlus, Play, Pause, ZoomIn, Paperclip, Smile, X, LayoutTemplate, ChevronLeft, Mic, Square, Volume2, VolumeX } from "lucide-react";
+import { Search, Send, Loader2, UserPlus, Play, Pause, ZoomIn, Paperclip, Smile, X, LayoutTemplate, ChevronLeft, Mic, Square, Volume2, VolumeX, Check, CheckCheck, AlertCircle } from "lucide-react";
 
 function playNotificationSound() {
   const Ctx = window.AudioContext ?? (window as any).webkitAudioContext;
@@ -171,6 +171,41 @@ function parseAgentHeader(text: string): { name: string | null; body: string } {
 }
 
 type AttachFile = { file: File; previewUrl: string | null };
+
+// WhatsApp delivery status icons (shown only on outgoing agent messages)
+function MessageStatus({
+  status,
+  errorCode,
+  errorMessage,
+}: {
+  status?: number;
+  errorCode?: string;
+  errorMessage?: string;
+}) {
+  if (errorCode || status === 3) {
+    const tip = errorMessage
+      ? `Erro ${errorCode ?? ""}: ${errorMessage}`
+      : errorCode
+      ? `Erro ${errorCode}: mensagem não entregue`
+      : "Falha no envio";
+    return (
+      <span title={tip} className="inline-flex items-center gap-0.5 text-red-400">
+        <AlertCircle className="h-3 w-3" />
+        <span className="text-[10px]">{errorCode ?? "erro"}</span>
+      </span>
+    );
+  }
+  if (status === 2) {
+    return <span title="Lida"><CheckCheck className="inline h-3.5 w-3.5 text-blue-400" /></span>;
+  }
+  if (status === 1) {
+    return <span title="Entregue"><CheckCheck className="inline h-3.5 w-3.5 text-white/50" /></span>;
+  }
+  if (status === 0) {
+    return <span title="Enviada"><Check className="inline h-3.5 w-3.5 text-white/50" /></span>;
+  }
+  return null;
+}
 
 function readFileAsBase64(file: File): Promise<string> {
   return new Promise((res, rej) => {
@@ -431,6 +466,14 @@ function AtendimentoPage() {
           text: (m.content as string) || null,
           attachments: (m.attachments ?? []) as any[],
           at: new Date((m.created_at as number) * 1000).toISOString(),
+          // WhatsApp delivery status: 0=sent, 1=delivered, 2=read, 3=failed
+          deliveryStatus: (m.content_attributes?.whatsapp?.status as number | undefined)
+            ?? (m.content_attributes?.status as number | undefined),
+          // Error info from Chatwoot (e.g. 131026 Message undeliverable)
+          errorCode: (m.content_attributes?.whatsapp?.errorCode as string | undefined)
+            ?? (m.content_attributes?.error_code as string | undefined),
+          errorMessage: (m.content_attributes?.whatsapp?.errorMessage as string | undefined)
+            ?? (m.content_attributes?.error_message as string | undefined),
         })),
     [messages]
   );
@@ -783,8 +826,15 @@ function AtendimentoPage() {
                       <div key={m.id} className={cn("flex", isAgent ? "justify-end" : "justify-start")}>
                         <div>
                           <div className="text-3xl leading-none">{m.text}</div>
-                          <div className={cn("mt-1 text-[11px] text-[#666] dark:text-[#909090]", isAgent ? "text-right" : "text-left")}>
-                            {timeAgo(m.at)} atrás
+                          <div className={cn("mt-1 flex items-center gap-1 text-[11px] text-[#666] dark:text-[#909090]", isAgent ? "justify-end" : "justify-start")}>
+                            <span>{timeAgo(m.at)} atrás</span>
+                            {isAgent && (
+                              <MessageStatus
+                                status={m.deliveryStatus}
+                                errorCode={m.errorCode}
+                                errorMessage={m.errorMessage}
+                              />
+                            )}
                           </div>
                         </div>
                       </div>
@@ -850,8 +900,27 @@ function AtendimentoPage() {
                           );
                         })}
 
-                        <div className={cn("mt-1 text-[11px] text-[#666] dark:text-[#909090]", isAgent ? "text-right" : "text-left")}>
-                          {timeAgo(m.at)} atrás
+                        {/* Error banner for failed messages */}
+                        {(m.errorCode || m.deliveryStatus === 3) && (
+                          <div className="mt-1 flex items-start gap-1.5 rounded-lg bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 px-2.5 py-1.5 text-[11px] text-red-600 dark:text-red-400">
+                            <AlertCircle className="h-3 w-3 mt-px shrink-0" />
+                            <span>
+                              {m.errorMessage
+                                ? `Erro ${m.errorCode ? `${m.errorCode}: ` : ""}${m.errorMessage}`
+                                : `Erro ${m.errorCode ?? ""}: mensagem não entregue`}
+                            </span>
+                          </div>
+                        )}
+
+                        <div className={cn("mt-1 flex items-center gap-1 text-[11px] text-[#666] dark:text-[#909090]", isAgent ? "justify-end" : "justify-start")}>
+                          <span>{timeAgo(m.at)} atrás</span>
+                          {isAgent && (
+                            <MessageStatus
+                              status={m.deliveryStatus}
+                              errorCode={m.errorCode}
+                              errorMessage={m.errorMessage}
+                            />
+                          )}
                         </div>
                       </div>
                     </div>
