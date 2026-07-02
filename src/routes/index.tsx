@@ -17,6 +17,8 @@ import {
   assignChatwootConversation,
   startConversationWithTemplate,
   retryChatwootMessage,
+  markConversationRead,
+  markConversationUnread,
 } from "@/lib/chatwoot.functions";
 import {
   getHubSpotContactByPhone,
@@ -885,7 +887,22 @@ function AtendimentoPage() {
                 key={c._phone ?? c.id}
                 conv={c}
                 active={c._convIds ? c._convIds.includes(activeId) : c.id === activeId}
-                onClick={() => { setActiveId(c.id); setActivePhone(c._phone ?? null); }}
+                onClick={() => {
+                  setActiveId(c.id);
+                  setActivePhone(c._phone ?? null);
+                  if ((c.unread_count ?? 0) > 0) {
+                    markConversationRead({ data: { conversationId: c.id } }).catch(() => {});
+                    setConversations((prev) =>
+                      prev.map((x) => x.id === c.id ? { ...x, unread_count: 0 } : x)
+                    );
+                  }
+                }}
+                onMarkUnread={() => {
+                  markConversationUnread({ data: { conversationId: c.id } }).catch(() => {});
+                  setConversations((prev) =>
+                    prev.map((x) => x.id === c.id ? { ...x, unread_count: 1 } : x)
+                  );
+                }}
               />
             ))
           )}
@@ -1625,7 +1642,8 @@ function ContactAvatar({
   );
 }
 
-function ConversationRow({ conv, active, onClick }: { conv: any; active: boolean; onClick: () => void }) {
+function ConversationRow({ conv, active, onClick, onMarkUnread }: { conv: any; active: boolean; onClick: () => void; onMarkUnread: () => void }) {
+  const [hovered, setHovered] = useState(false);
   const name = conv.meta?.sender?.name ?? "Desconhecido";
   const preview = conv.last_message?.content ?? "";
   const updatedAt = conv.last_activity_at
@@ -1634,12 +1652,14 @@ function ConversationRow({ conv, active, onClick }: { conv: any; active: boolean
   const unread = (conv.unread_count ?? 0) > 0;
 
   return (
-    <button
-      onClick={onClick}
+    <div
       className={cn(
-        "flex w-full items-start gap-3 border-b border-[#e5e5e5] dark:border-[#2a2a2a] px-3 py-3 text-left transition-colors",
+        "relative flex w-full items-start gap-3 border-b border-[#e5e5e5] dark:border-[#2a2a2a] px-3 py-3 text-left transition-colors cursor-pointer",
         active ? "bg-white dark:bg-[#1a1a1a]" : "hover:bg-white/60 dark:hover:bg-[#252525]"
       )}
+      onClick={onClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
     >
       <ContactAvatar name={name} src={conv.meta?.sender?.avatar_url} />
       <div className="min-w-0 flex-1">
@@ -1649,10 +1669,21 @@ function ConversationRow({ conv, active, onClick }: { conv: any; active: boolean
         </div>
         <p className="mt-0.5 truncate text-xs text-[#666] dark:text-[#909090]">{preview}</p>
       </div>
-      {unread && (
-        <span className="mt-1 h-2 w-2 shrink-0 rounded-full" style={{ background: "#00e186" }} />
-      )}
-    </button>
+      <div className="mt-0.5 flex shrink-0 items-center gap-1">
+        {hovered && !unread && (
+          <button
+            title="Marcar como não lida"
+            onClick={(e) => { e.stopPropagation(); onMarkUnread(); }}
+            className="rounded p-0.5 text-[#999] hover:text-[#090909] dark:hover:text-[#e8e8e8] transition-colors"
+          >
+            <span className="h-2 w-2 block rounded-full border-2 border-current" />
+          </button>
+        )}
+        {unread && (
+          <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: "#00e186" }} />
+        )}
+      </div>
+    </div>
   );
 }
 

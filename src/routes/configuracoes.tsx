@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { cn, initialsOf } from "@/lib/utils";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
-import { testChatwootConnection } from "@/lib/chatwoot.functions";
+import { testChatwootConnection, backfillConversationAssignments } from "@/lib/chatwoot.functions";
 import {
   testHubspotConnection,
   getHubSpotProperties,
@@ -317,6 +317,51 @@ function IntegrationsTab() {
       >
         {saving ? "Salvando…" : "Salvar configurações"}
       </Button>
+
+      <BackfillAssignmentsButton />
+    </div>
+  );
+}
+
+function BackfillAssignmentsButton() {
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState<{ assigned: number; skipped: number } | null>(null);
+
+  async function run() {
+    setRunning(true);
+    setResult(null);
+    try {
+      const res = await backfillConversationAssignments({ data: { onlyUnassigned: true } });
+      setResult(res);
+      toast.success(`${res.assigned} conversa(s) atribuída(s)`);
+    } catch (e: any) {
+      toast.error(e?.message ?? "Erro ao executar atribuição retroativa");
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  return (
+    <div className="space-y-2 rounded-lg border border-[#e5e5e5] dark:border-[#2a2a2a] p-4">
+      <div className="text-sm font-semibold text-[#090909] dark:text-[#e8e8e8]">Atribuição retroativa de conversas</div>
+      <p className="text-xs text-[#666] dark:text-[#909090]">
+        Percorre todas as conversas sem atribuição e atribui ao agente que enviou a primeira mensagem.
+      </p>
+      <div className="flex items-center gap-3">
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={run}
+          disabled={running}
+        >
+          {running ? <><Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />Executando…</> : "Executar agora"}
+        </Button>
+        {result && (
+          <span className="text-xs text-[#666] dark:text-[#909090]">
+            {result.assigned} atribuída(s) · {result.skipped} ignorada(s)
+          </span>
+        )}
+      </div>
     </div>
   );
 }

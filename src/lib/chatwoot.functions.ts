@@ -337,6 +337,81 @@ export const assignChatwootConversation = createServerFn({ method: "POST" })
     return await res.json();
   });
 
+export const backfillConversationAssignments = createServerFn({ method: "POST" })
+  .inputValidator((data: { onlyUnassigned?: boolean }) => data)
+  .handler(async ({ data }) => {
+    const s = await getChatwootSettings();
+
+    // Load all agents once
+    const agentsRes = await fetch(
+      `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/agents`,
+      { headers: { api_access_token: s.chatwoot_token! } }
+    );
+    if (!agentsRes.ok) throw new Error("Erro ao carregar agentes");
+    const agents: { id: number; name: string; email: string }[] = await agentsRes.json();
+
+    let assigned = 0;
+    let skipped = 0;
+
+    for (const status of ["open", "pending", "resolved"] as const) {
+      let page = 1;
+      while (true) {
+        const res = await fetch(
+          `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/conversations?status=${status}&page=${page}`,
+          { headers: { api_access_token: s.chatwoot_token! } }
+        );
+        if (!res.ok) break;
+        const json = await res.json();
+        const convs: any[] = json.data?.payload ?? [];
+        if (!convs.length) break;
+
+        for (const conv of convs) {
+          // Skip if already assigned and onlyUnassigned is true
+          if (data.onlyUnassigned !== false && conv.meta?.assignee?.id) {
+            skipped++;
+            continue;
+          }
+
+          // Fetch messages to find first outgoing sender
+          const msgRes = await fetch(
+            `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/conversations/${conv.id}/messages`,
+            { headers: { api_access_token: s.chatwoot_token! } }
+          );
+          if (!msgRes.ok) continue;
+          const msgJson = await msgRes.json();
+          const msgs: any[] = (msgJson.payload ?? []).filter((m: any) => m.message_type === 1);
+          if (!msgs.length) { skipped++; continue; }
+
+          // First outgoing message — sender is the agent
+          const firstOut = msgs.sort((a: any, b: any) => (a.created_at ?? 0) - (b.created_at ?? 0))[0];
+          const senderName: string = firstOut.sender?.name ?? "";
+          const senderEmail: string = firstOut.sender?.email ?? "";
+
+          const match = agents.find((a) =>
+            (senderEmail && a.email === senderEmail) ||
+            (senderName && a.name === senderName)
+          );
+          if (!match) { skipped++; continue; }
+
+          await fetch(
+            `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/conversations/${conv.id}/assignments`,
+            {
+              method: "POST",
+              headers: { api_access_token: s.chatwoot_token!, "Content-Type": "application/json" },
+              body: JSON.stringify({ assignee_id: match.id }),
+            }
+          );
+          assigned++;
+        }
+
+        if (convs.length < 25) break;
+        page++;
+      }
+    }
+
+    return { assigned, skipped };
+  });
+
 export const startConversationWithTemplate = createServerFn({ method: "POST" })
   .inputValidator((data: {
     phone: string;
@@ -550,6 +625,28 @@ export const sendChatwootAttachment = createServerFn({ method: "POST" })
     );
     if (!res.ok) throw new Error(`Chatwoot error: ${res.status}`);
     return await res.json();
+  });
+
+export const markConversationRead = createServerFn({ method: "POST" })
+  .inputValidator((data: { conversationId: number }) => data)
+  .handler(async ({ data }) => {
+    const s = await getChatwootSettings();
+    await fetch(
+      `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/conversations/${data.conversationId}/update_last_seen`,
+      { method: "POST", headers: { api_access_token: s.chatwoot_token! } }
+    );
+    return { ok: true };
+  });
+
+export const markConversationUnread = createServerFn({ method: "POST" })
+  .inputValidator((data: { conversationId: number }) => data)
+  .handler(async ({ data }) => {
+    const s = await getChatwootSettings();
+    await fetch(
+      `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/conversations/${data.conversationId}/unread`,
+      { method: "POST", headers: { api_access_token: s.chatwoot_token! } }
+    );
+    return { ok: true };
   });
 
 export const updateChatwootConversationStatus = createServerFn({ method: "POST" })
