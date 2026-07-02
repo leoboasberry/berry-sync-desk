@@ -53,6 +53,16 @@ function playNotificationSound() {
   setTimeout(() => ctx.close(), 500);
 }
 
+function fmtBRT(iso: string): string {
+  const d = new Date(iso);
+  const today = new Date();
+  const isToday = d.toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" }) === today.toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" });
+  if (isToday) {
+    return d.toLocaleTimeString("pt-BR", { timeZone: "America/Sao_Paulo", hour: "2-digit", minute: "2-digit" });
+  }
+  return d.toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+
 // Client-side phone normalization (mirrors server-side in chatwoot.functions.ts)
 function normalizePhone(raw: string | null | undefined): string {
   if (!raw) return "";
@@ -974,7 +984,7 @@ function AtendimentoPage() {
                           <div>
                             <div className="text-3xl leading-none">{m.text}</div>
                             <div className={cn("mt-1 flex items-center gap-1 text-[11px] text-[#666] dark:text-[#909090]", isAgent ? "justify-end" : "justify-start")}>
-                              <span>{timeAgo(m.at)} atrás</span>
+                              <span>{fmtBRT(m.at)}</span>
                               {isAgent && (
                                 <MessageStatus
                                   status={m.deliveryStatus}
@@ -1080,7 +1090,7 @@ function AtendimentoPage() {
                         )}
 
                         <div className={cn("mt-1 flex items-center gap-1 text-[11px] text-[#666] dark:text-[#909090]", isAgent ? "justify-end" : "justify-start")}>
-                          <span>{timeAgo(m.at)} atrás</span>
+                          <span>{fmtBRT(m.at)}</span>
                           {isAgent && (
                             <MessageStatus
                               status={m.deliveryStatus}
