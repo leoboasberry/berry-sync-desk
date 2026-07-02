@@ -432,7 +432,10 @@ function AtendimentoPage() {
 
   const displayedConversations = useMemo(() => {
     if (myRole !== "agent" || myChatwootAgentId === null) return conversations;
-    return conversations.filter((c) => c.meta?.assignee?.id === myChatwootAgentId);
+    // Agents see their own conversations + unassigned ones (so anyone can pick up)
+    return conversations.filter(
+      (c) => !c.meta?.assignee?.id || c.meta?.assignee?.id === myChatwootAgentId
+    );
   }, [conversations, myRole, myChatwootAgentId]);
 
   // Group conversations by normalized phone — one entry per contact in the sidebar
