@@ -382,7 +382,30 @@ export const backfillConversationAssignments = createServerFn({ method: "POST" }
           const msgJson = await msgRes.json();
           // message_type 1 = outgoing agent message; also include type 3 (template)
           const msgs: any[] = (msgJson.payload ?? []).filter((m: any) => m.message_type === 1 || m.message_type === 3);
-          if (!msgs.length) { skippedNoOutgoing++; continue; }
+          if (!msgs.length) {
+            // Fallback: try conversation creator
+            const createdById: number | undefined = conv.meta?.created_by?.id ?? conv.created_by?.id;
+            const createdByName: string = conv.meta?.created_by?.name ?? conv.created_by?.name ?? "";
+            const createdByEmail: string = conv.meta?.created_by?.email ?? conv.created_by?.email ?? "";
+            const creatorMatch = createdById
+              ? agents.find((a) => a.id === createdById || (createdByEmail && a.email === createdByEmail) || (createdByName && a.name === createdByName))
+              : undefined;
+            if (creatorMatch) {
+              await fetch(
+                `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/conversations/${conv.id}/assignments`,
+                {
+                  method: "POST",
+                  headers: { api_access_token: s.chatwoot_token!, "Content-Type": "application/json" },
+                  body: JSON.stringify({ assignee_id: creatorMatch.id }),
+                }
+              );
+              assigned++;
+            } else {
+              skippedNoOutgoing++;
+              if (noMatchSamples.length < 10) noMatchSamples.push({ convId: conv.id, senderName: `[creator] ${createdByName}`, senderEmail: createdByEmail });
+            }
+            continue;
+          }
 
           const firstOut = msgs.sort((a: any, b: any) => (a.created_at ?? 0) - (b.created_at ?? 0))[0];
           const senderName: string = firstOut.sender?.name ?? "";
