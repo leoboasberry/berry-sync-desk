@@ -53,6 +53,30 @@ function playNotificationSound() {
   setTimeout(() => ctx.close(), 500);
 }
 
+// Client-side phone normalization (mirrors server-side in chatwoot.functions.ts)
+function normalizePhone(raw: string | null | undefined): string {
+  if (!raw) return "";
+  const d = raw.replace(/\D/g, "");
+  if (d.length === 13 && d.startsWith("55")) return d;
+  if (d.length === 12 && d.startsWith("55")) return d.slice(0, 4) + "9" + d.slice(4);
+  if (d.length === 11) return "55" + d;
+  if (d.length === 10) return "55" + d.slice(0, 2) + "9" + d.slice(2);
+  return d;
+}
+
+// Pick the "best" name: prefer the longer/more complete one
+function bestName(a: string, b: string): string {
+  const clean = (s: string) => s.trim().replace(/\s+/g, " ");
+  const ca = clean(a); const cb = clean(b);
+  if (!ca) return cb; if (!cb) return ca;
+  // Prefer names with spaces (full name) over single word
+  const aHasSpace = ca.includes(" "); const bHasSpace = cb.includes(" ");
+  if (aHasSpace && !bHasSpace) return ca;
+  if (bHasSpace && !aHasSpace) return cb;
+  // Otherwise prefer longer
+  return ca.length >= cb.length ? ca : cb;
+}
+
 const EMOJI_ONLY_RE = /^(\p{Emoji_Presentation}|\p{Extended_Pictographic}|️|‍|\s)+$/u;
 function isEmojiOnly(text: string) {
   return EMOJI_ONLY_RE.test(text.trim()) && text.trim().length > 0;
@@ -252,6 +276,7 @@ function AtendimentoPage() {
   const [search, setSearch] = useState("");
   const [conversations, setConversations] = useState<any[]>([]);
   const [activeId, setActiveId] = useState<number | null>(null);
+  const [activePhone, setActivePhone] = useState<string | null>(null);
   const [messages, setMessages] = useState<any[]>([]);
   const [historyMessages, setHistoryMessages] = useState<any[]>([]);
   const [backfilling, setBackfilling] = useState(false);
@@ -397,21 +422,51 @@ function AtendimentoPage() {
     return conversations.filter((c) => c.meta?.assignee?.id === myChatwootAgentId);
   }, [conversations, myRole, myChatwootAgentId]);
 
+  // Group conversations by normalized phone — one entry per contact in the sidebar
+  const groupedConversations = useMemo(() => {
+    const map = new Map<string, any>();
+    for (const c of displayedConversations) {
+      const rawPhone = c.meta?.sender?.phone_number ?? "";
+      const phone = normalizePhone(rawPhone) || rawPhone;
+      const key = phone || `no-phone-${c.id}`;
+      const existing = map.get(key);
+      if (!existing) {
+        map.set(key, { ...c, _phone: phone, _convIds: [c.id] });
+      } else {
+        // Merge: keep most recent activity, best name, combined unread
+        const existingAt = existing.last_activity_at ?? 0;
+        const newAt = c.last_activity_at ?? 0;
+        const mergedName = bestName(existing.meta?.sender?.name ?? "", c.meta?.sender?.name ?? "");
+        const merged = newAt > existingAt ? { ...c } : { ...existing };
+        merged._phone = phone;
+        merged._convIds = [...existing._convIds, c.id];
+        merged.unread_count = (existing.unread_count ?? 0) + (c.unread_count ?? 0);
+        merged.meta = { ...merged.meta, sender: { ...merged.meta?.sender, name: mergedName } };
+        map.set(key, merged);
+      }
+    }
+    // Sort by most recent activity
+    return Array.from(map.values()).sort((a, b) => (b.last_activity_at ?? 0) - (a.last_activity_at ?? 0));
+  }, [displayedConversations]);
+
   useEffect(() => {
     setLoadingConvs(true);
     setConversations([]);
     setActiveId(null);
+    setActivePhone(null);
     setMessages([]);
     getChatwootConversations({ data: { status: tab } })
       .then((convs) => {
         setConversations(convs);
         const pending = pendingConversationIdRef.current;
-        if (pending && convs.some((c) => c.id === pending)) {
+        if (pending && convs.some((c: any) => c.id === pending)) {
           setActiveId(pending);
+          setActivePhone(normalizePhone(convs.find((c: any) => c.id === pending)?.meta?.sender?.phone_number));
           pendingConversationIdRef.current = null;
           navigate({ to: "/", search: {}, replace: true });
         } else if (convs.length > 0) {
           setActiveId(convs[0].id);
+          setActivePhone(normalizePhone(convs[0]?.meta?.sender?.phone_number));
         }
       })
       .catch(console.error)
@@ -421,11 +476,11 @@ function AtendimentoPage() {
   useEffect(() => {
     if (!activeId) { setMessages([]); setHistoryMessages([]); setHubContact(null); return; }
 
-    const phone = conversations.find((c) => c.id === activeId)?.meta?.sender?.phone_number ?? "";
+    const phone = activePhone ?? normalizePhone(conversations.find((c) => c.id === activeId)?.meta?.sender?.phone_number);
 
     setLoadingMsgs(true);
 
-    // Load current conversation messages (with sync to history) + full contact history in parallel
+    // Load current conversation messages (sync to history) + full contact history in parallel
     Promise.all([
       getChatwootMessages({ data: { conversationId: activeId, contactPhone: phone || undefined } }),
       phone ? getContactHistory({ data: { contactPhone: phone } }) : Promise.resolve([]),
@@ -451,7 +506,6 @@ function AtendimentoPage() {
       getChatwootMessages({ data: { conversationId: activeId, contactPhone: phone || undefined } })
         .then((msgs) => {
           setMessages(msgs);
-          // Refresh history too so status updates propagate
           if (phone) getContactHistory({ data: { contactPhone: phone } }).then(setHistoryMessages).catch(() => {});
         })
         .catch(() => {});
@@ -471,26 +525,27 @@ function AtendimentoPage() {
     return () => clearInterval(poll);
   }, [activeId]);
 
-  const visible = useMemo(
-    () =>
-      displayedConversations.filter((c) => {
-        const name = (c.meta?.sender?.name ?? "").toLowerCase();
-        const preview = (c.last_message?.content ?? "").toLowerCase();
-        const q = search.toLowerCase();
-        return q === "" || name.includes(q) || preview.includes(q);
-      }),
-    [displayedConversations, search]
-  );
+  const visible = useMemo(() => {
+    const q = search.toLowerCase();
+    return groupedConversations.filter((c) => {
+      if (q === "") return true;
+      const name = (c.meta?.sender?.name ?? "").toLowerCase();
+      const preview = (c.last_message?.content ?? "").toLowerCase();
+      return name.includes(q) || preview.includes(q);
+    });
+  }, [groupedConversations, search]);
 
   // If role=agent and the selected conversation is not in the filtered list, fix the selection
   useEffect(() => {
     if (myRole !== "agent" || myChatwootAgentId === null) return;
     if (activeId === null) return;
-    const isAllowed = displayedConversations.some((c) => c.id === activeId);
+    const isAllowed = groupedConversations.some((c) => c._convIds?.includes(activeId) ?? c.id === activeId);
     if (!isAllowed) {
-      setActiveId(displayedConversations[0]?.id ?? null);
+      const first = groupedConversations[0];
+      setActiveId(first?.id ?? null);
+      setActivePhone(first?._phone ?? null);
     }
-  }, [displayedConversations, myRole, myChatwootAgentId]);
+  }, [groupedConversations, myRole, myChatwootAgentId]);
 
   const active = conversations.find((c) => c.id === activeId) ?? null;
 
@@ -532,16 +587,10 @@ function AtendimentoPage() {
     }
 
     // Build a deduplicated, chronologically sorted list from history + current messages
-    // Exclude history from OTHER open conversations — those have their own card in the sidebar
-    const openConvIds = new Set(conversations.map((c: any) => c.id as number));
-
     const historyById = new Map<number, ReturnType<typeof mapMsg>>();
     for (const m of historyMessages) {
       if (m.message_type === 2) continue;
       if (!m.content && !(m.attachments?.length)) continue;
-      const convId = m.conversation_id as number;
-      // Skip messages from open conversations that aren't the active one
-      if (convId !== activeId && openConvIds.has(convId)) continue;
       historyById.set(m.chatwoot_message_id as number, mapMsg(m));
     }
     // Current conversation messages override history (fresher status)
@@ -817,10 +866,10 @@ function AtendimentoPage() {
           ) : (
             visible.map((c) => (
               <ConversationRow
-                key={c.id}
+                key={c._phone ?? c.id}
                 conv={c}
-                active={c.id === activeId}
-                onClick={() => setActiveId(c.id)}
+                active={c._convIds ? c._convIds.includes(activeId) : c.id === activeId}
+                onClick={() => { setActiveId(c.id); setActivePhone(c._phone ?? null); }}
               />
             ))
           )}
