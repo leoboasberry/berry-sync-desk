@@ -1110,8 +1110,8 @@ function AtendimentoPage() {
             </div>
 
             <div className="border-t border-[#e5e5e5] dark:border-[#2a2a2a] px-6 py-4">
-              {/* 24h window warning */}
-              {active && active.can_reply === false && (
+              {/* 24h window warning — only for open conversations */}
+              {active && active.can_reply === false && active.status === "open" && (
                 <div className="mb-3 flex items-center gap-2 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 px-3 py-2 text-[11px] text-amber-700 dark:text-amber-400">
                   <AlertCircle className="h-3.5 w-3.5 shrink-0" />
                   <span>Fora da janela de 24h — use um template para iniciar a conversa.</span>
@@ -1337,15 +1337,15 @@ function AtendimentoPage() {
                   value={draft}
                   onChange={(e) => { setDraft(e.target.value); setDraftIsTemplate(false); }}
                   onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
-                  placeholder={active?.can_reply === false ? "Use um template para responder…" : "Digite uma mensagem…"}
-                  disabled={active?.can_reply === false}
+                  placeholder={active?.can_reply === false && active?.status === "open" ? "Use um template para responder…" : "Digite uma mensagem…"}
+                  disabled={active?.can_reply === false && active?.status === "open"}
                   className="h-11 flex-1"
                 />
                 <Button
                   size="icon"
                   className="h-11 w-11 shrink-0 bg-[#090909] text-white hover:bg-[#090909]/90"
                   onClick={handleSend}
-                  disabled={sending || (!draft.trim() && !attachFile) || active?.can_reply === false}
+                  disabled={sending || (!draft.trim() && !attachFile) || (active?.can_reply === false && active?.status === "open")}
                 >
                   {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                 </Button>
