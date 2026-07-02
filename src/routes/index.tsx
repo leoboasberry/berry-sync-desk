@@ -532,10 +532,16 @@ function AtendimentoPage() {
     }
 
     // Build a deduplicated, chronologically sorted list from history + current messages
+    // Exclude history from OTHER open conversations — those have their own card in the sidebar
+    const openConvIds = new Set(conversations.map((c: any) => c.id as number));
+
     const historyById = new Map<number, ReturnType<typeof mapMsg>>();
     for (const m of historyMessages) {
       if (m.message_type === 2) continue;
       if (!m.content && !(m.attachments?.length)) continue;
+      const convId = m.conversation_id as number;
+      // Skip messages from open conversations that aren't the active one
+      if (convId !== activeId && openConvIds.has(convId)) continue;
       historyById.set(m.chatwoot_message_id as number, mapMsg(m));
     }
     // Current conversation messages override history (fresher status)
