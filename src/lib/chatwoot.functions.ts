@@ -627,6 +627,18 @@ export const sendChatwootAttachment = createServerFn({ method: "POST" })
     return await res.json();
   });
 
+export const getChatwootConversationById = createServerFn({ method: "POST" })
+  .inputValidator((data: { conversationId: number }) => data)
+  .handler(async ({ data }) => {
+    const s = await getChatwootSettings();
+    const res = await fetch(
+      `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/conversations/${data.conversationId}`,
+      { headers: { api_access_token: s.chatwoot_token! } }
+    );
+    if (!res.ok) throw new Error(`Conversa não encontrada: ${res.status}`);
+    return await res.json();
+  });
+
 export const markConversationRead = createServerFn({ method: "POST" })
   .inputValidator((data: { conversationId: number }) => data)
   .handler(async ({ data }) => {

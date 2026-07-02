@@ -19,6 +19,7 @@ import {
   retryChatwootMessage,
   markConversationRead,
   markConversationUnread,
+  getChatwootConversationById,
 } from "@/lib/chatwoot.functions";
 import {
   getHubSpotContactByPhone,
@@ -30,7 +31,7 @@ import {
   type HsField,
 } from "@/lib/hubspot.functions";
 import { supabase } from "@/integrations/supabase/client";
-import { Search, Send, Loader2, UserPlus, Play, Pause, ZoomIn, Paperclip, Smile, X, LayoutTemplate, ChevronLeft, Mic, Square, Volume2, VolumeX, Check, CheckCheck, AlertCircle, RotateCcw } from "lucide-react";
+import { Search, Send, Loader2, UserPlus, Play, Pause, ZoomIn, Paperclip, Smile, X, LayoutTemplate, ChevronLeft, Mic, Square, Volume2, VolumeX, Check, CheckCheck, AlertCircle, RotateCcw, Link } from "lucide-react";
 
 function playNotificationSound() {
   const Ctx = window.AudioContext ?? (window as any).webkitAudioContext;
@@ -472,11 +473,30 @@ function AtendimentoPage() {
       .then((convs) => {
         setConversations(convs);
         const pending = pendingConversationIdRef.current;
-        if (pending && convs.some((c: any) => c.id === pending)) {
-          setActiveId(pending);
-          setActivePhone(normalizePhone(convs.find((c: any) => c.id === pending)?.meta?.sender?.phone_number));
-          pendingConversationIdRef.current = null;
-          navigate({ to: "/", search: {}, replace: true });
+        if (pending) {
+          const found = convs.find((c: any) => c.id === pending);
+          if (found) {
+            setActiveId(pending);
+            setActivePhone(normalizePhone(found.meta?.sender?.phone_number));
+            pendingConversationIdRef.current = null;
+            navigate({ to: "/", search: {}, replace: true });
+          } else {
+            // Conversation not in current tab — fetch it directly and switch tab
+            getChatwootConversationById({ data: { conversationId: pending } })
+              .then((conv: any) => {
+                const convStatus: Tab = conv.status ?? "open";
+                setConversations((prev) => {
+                  if (prev.some((c) => c.id === conv.id)) return prev;
+                  return [conv, ...prev];
+                });
+                setActiveId(conv.id);
+                setActivePhone(normalizePhone(conv.meta?.sender?.phone_number));
+                setTab(convStatus);
+                pendingConversationIdRef.current = null;
+                navigate({ to: "/", search: {}, replace: true });
+              })
+              .catch(console.error);
+          }
         } else if (convs.length > 0) {
           setActiveId(convs[0].id);
           setActivePhone(normalizePhone(convs[0]?.meta?.sender?.phone_number));
@@ -1644,6 +1664,7 @@ function ContactAvatar({
 
 function ConversationRow({ conv, active, onClick, onMarkUnread }: { conv: any; active: boolean; onClick: () => void; onMarkUnread: () => void }) {
   const [hovered, setHovered] = useState(false);
+  const [copied, setCopied] = useState(false);
   const name = conv.meta?.sender?.name ?? "Desconhecido";
   const preview = conv.last_message?.content ?? "";
   const updatedAt = conv.last_activity_at
@@ -1670,14 +1691,32 @@ function ConversationRow({ conv, active, onClick, onMarkUnread }: { conv: any; a
         <p className="mt-0.5 truncate text-xs text-[#666] dark:text-[#909090]">{preview}</p>
       </div>
       <div className="mt-0.5 flex shrink-0 items-center gap-1">
-        {hovered && !unread && (
-          <button
-            title="Marcar como não lida"
-            onClick={(e) => { e.stopPropagation(); onMarkUnread(); }}
-            className="rounded p-0.5 text-[#999] hover:text-[#090909] dark:hover:text-[#e8e8e8] transition-colors"
-          >
-            <span className="h-2 w-2 block rounded-full border-2 border-current" />
-          </button>
+        {hovered && (
+          <>
+            <button
+              title="Copiar link da conversa"
+              onClick={(e) => {
+                e.stopPropagation();
+                const url = `${window.location.origin}/?conversationId=${conv.id}`;
+                navigator.clipboard.writeText(url).then(() => {
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 2000);
+                });
+              }}
+              className="rounded p-0.5 text-[#999] hover:text-[#090909] dark:hover:text-[#e8e8e8] transition-colors"
+            >
+              {copied ? <Check className="h-3 w-3" /> : <Link className="h-3 w-3" />}
+            </button>
+            {!unread && (
+              <button
+                title="Marcar como não lida"
+                onClick={(e) => { e.stopPropagation(); onMarkUnread(); }}
+                className="rounded p-0.5 text-[#999] hover:text-[#090909] dark:hover:text-[#e8e8e8] transition-colors"
+              >
+                <span className="h-2 w-2 block rounded-full border-2 border-current" />
+              </button>
+            )}
+          </>
         )}
         {unread && (
           <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: "#00e186" }} />
