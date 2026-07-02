@@ -706,6 +706,11 @@ function AtendimentoPage() {
       }
       setDraft("");
       setDraftIsTemplate(false);
+      // Auto-assign to sender if conversation has no assignee
+      const currentConv = conversations.find((c) => c.id === activeId);
+      if (myChatwootAgentId && !currentConv?.meta?.assignee?.id) {
+        assignChatwootConversation({ data: { conversationId: activeId, assigneeId: myChatwootAgentId } }).catch(() => {});
+      }
       const updated = await getChatwootMessages({ data: { conversationId: activeId } });
       setMessages(updated);
     } catch (e) {
