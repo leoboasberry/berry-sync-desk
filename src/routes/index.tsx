@@ -443,14 +443,15 @@ function AtendimentoPage() {
       if (!existing) {
         map.set(key, { ...c, _phone: phone, _convIds: [c.id] });
       } else {
-        // Merge: keep most recent activity, best name, combined unread
-        const existingAt = existing.last_activity_at ?? 0;
-        const newAt = c.last_activity_at ?? 0;
+        const convIds = [...existing._convIds, c.id];
         const mergedName = bestName(existing.meta?.sender?.name ?? "", c.meta?.sender?.name ?? "");
-        const merged = newAt > existingAt ? { ...c } : { ...existing };
-        merged._phone = phone;
-        merged._convIds = [...existing._convIds, c.id];
-        merged.unread_count = (existing.unread_count ?? 0) + (c.unread_count ?? 0);
+        const unread = (existing.unread_count ?? 0) + (c.unread_count ?? 0);
+        // Base display on the most recent OPEN conversation; fall back to most recent overall
+        const allInGroup = [existing, c];
+        const openOnes = allInGroup.filter((x) => x.status === "open");
+        const sortByActivity = (arr: any[]) => [...arr].sort((a, b) => (b.last_activity_at ?? 0) - (a.last_activity_at ?? 0));
+        const base = sortByActivity(openOnes.length ? openOnes : allInGroup)[0];
+        const merged = { ...base, _phone: phone, _convIds: convIds, unread_count: unread };
         merged.meta = { ...merged.meta, sender: { ...merged.meta?.sender, name: mergedName } };
         map.set(key, merged);
       }
