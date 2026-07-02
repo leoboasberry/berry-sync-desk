@@ -66,7 +66,17 @@ export const getAllChatwootConversations = createServerFn({ method: "POST" })
 
 function normalizePhone(raw: string | null | undefined): string {
   if (!raw) return "";
-  return raw.replace(/\D/g, "");
+  const d = raw.replace(/\D/g, "");
+  // Canonical Brazilian format: 55 + 2-digit area + 9-digit mobile = 13 digits
+  // 13 digits starting with 55 → already canonical
+  if (d.length === 13 && d.startsWith("55")) return d;
+  // 12 digits starting with 55 (old 8-digit number) → insert 9th digit after area code
+  if (d.length === 12 && d.startsWith("55")) return d.slice(0, 4) + "9" + d.slice(4);
+  // 11 digits (area + 9-digit, missing country code) → prepend 55
+  if (d.length === 11) return "55" + d;
+  // 10 digits (area + 8-digit, missing country code and 9th digit) → prepend 55, insert 9
+  if (d.length === 10) return "55" + d.slice(0, 2) + "9" + d.slice(2);
+  return d;
 }
 
 async function upsertMessagesToHistory(msgs: any[], contactPhone: string, conversationId: number) {
