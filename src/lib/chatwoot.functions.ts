@@ -351,7 +351,10 @@ export const backfillConversationAssignments = createServerFn({ method: "POST" }
     const agents: { id: number; name: string; email: string }[] = await agentsRes.json();
 
     let assigned = 0;
-    let skipped = 0;
+    let skippedAlreadyAssigned = 0;
+    let skippedNoOutgoing = 0;
+    let skippedNoAgentMatch = 0;
+    const noMatchSamples: { convId: number; senderName: string; senderEmail: string }[] = [];
 
     for (const status of ["open", "pending", "resolved"] as const) {
       let page = 1;
@@ -366,23 +369,21 @@ export const backfillConversationAssignments = createServerFn({ method: "POST" }
         if (!convs.length) break;
 
         for (const conv of convs) {
-          // Skip if already assigned and onlyUnassigned is true
           if (data.onlyUnassigned !== false && conv.meta?.assignee?.id) {
-            skipped++;
+            skippedAlreadyAssigned++;
             continue;
           }
 
-          // Fetch messages to find first outgoing sender
           const msgRes = await fetch(
             `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/conversations/${conv.id}/messages`,
             { headers: { api_access_token: s.chatwoot_token! } }
           );
           if (!msgRes.ok) continue;
           const msgJson = await msgRes.json();
-          const msgs: any[] = (msgJson.payload ?? []).filter((m: any) => m.message_type === 1);
-          if (!msgs.length) { skipped++; continue; }
+          // message_type 1 = outgoing agent message; also include type 3 (template)
+          const msgs: any[] = (msgJson.payload ?? []).filter((m: any) => m.message_type === 1 || m.message_type === 3);
+          if (!msgs.length) { skippedNoOutgoing++; continue; }
 
-          // First outgoing message — sender is the agent
           const firstOut = msgs.sort((a: any, b: any) => (a.created_at ?? 0) - (b.created_at ?? 0))[0];
           const senderName: string = firstOut.sender?.name ?? "";
           const senderEmail: string = firstOut.sender?.email ?? "";
@@ -391,7 +392,11 @@ export const backfillConversationAssignments = createServerFn({ method: "POST" }
             (senderEmail && a.email === senderEmail) ||
             (senderName && a.name === senderName)
           );
-          if (!match) { skipped++; continue; }
+          if (!match) {
+            skippedNoAgentMatch++;
+            if (noMatchSamples.length < 10) noMatchSamples.push({ convId: conv.id, senderName, senderEmail });
+            continue;
+          }
 
           await fetch(
             `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/conversations/${conv.id}/assignments`,
@@ -409,7 +414,7 @@ export const backfillConversationAssignments = createServerFn({ method: "POST" }
       }
     }
 
-    return { assigned, skipped };
+    return { assigned, skippedAlreadyAssigned, skippedNoOutgoing, skippedNoAgentMatch, noMatchSamples };
   });
 
 export const startConversationWithTemplate = createServerFn({ method: "POST" })

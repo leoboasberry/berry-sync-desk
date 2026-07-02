@@ -325,14 +325,20 @@ function IntegrationsTab() {
 
 function BackfillAssignmentsButton() {
   const [running, setRunning] = useState(false);
-  const [result, setResult] = useState<{ assigned: number; skipped: number } | null>(null);
+  const [result, setResult] = useState<{
+    assigned: number;
+    skippedAlreadyAssigned: number;
+    skippedNoOutgoing: number;
+    skippedNoAgentMatch: number;
+    noMatchSamples: { convId: number; senderName: string; senderEmail: string }[];
+  } | null>(null);
 
   async function run() {
     setRunning(true);
     setResult(null);
     try {
       const res = await backfillConversationAssignments({ data: { onlyUnassigned: true } });
-      setResult(res);
+      setResult(res as any);
       toast.success(`${res.assigned} conversa(s) atribuída(s)`);
     } catch (e: any) {
       toast.error(e?.message ?? "Erro ao executar atribuição retroativa");
@@ -342,26 +348,34 @@ function BackfillAssignmentsButton() {
   }
 
   return (
-    <div className="space-y-2 rounded-lg border border-[#e5e5e5] dark:border-[#2a2a2a] p-4">
+    <div className="space-y-3 rounded-lg border border-[#e5e5e5] dark:border-[#2a2a2a] p-4">
       <div className="text-sm font-semibold text-[#090909] dark:text-[#e8e8e8]">Atribuição retroativa de conversas</div>
       <p className="text-xs text-[#666] dark:text-[#909090]">
         Percorre todas as conversas sem atribuição e atribui ao agente que enviou a primeira mensagem.
       </p>
       <div className="flex items-center gap-3">
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={run}
-          disabled={running}
-        >
+        <Button size="sm" variant="outline" onClick={run} disabled={running}>
           {running ? <><Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />Executando…</> : "Executar agora"}
         </Button>
-        {result && (
-          <span className="text-xs text-[#666] dark:text-[#909090]">
-            {result.assigned} atribuída(s) · {result.skipped} ignorada(s)
-          </span>
-        )}
       </div>
+      {result && (
+        <div className="space-y-1.5 text-xs text-[#666] dark:text-[#909090]">
+          <div className="font-medium text-[#090909] dark:text-[#e8e8e8]">{result.assigned} atribuída(s)</div>
+          <div>✓ Já atribuídas (ignoradas): {result.skippedAlreadyAssigned}</div>
+          <div>✗ Sem mensagem outgoing: {result.skippedNoOutgoing}</div>
+          <div>✗ Agente não encontrado: {result.skippedNoAgentMatch}</div>
+          {result.noMatchSamples?.length > 0 && (
+            <div className="mt-2">
+              <div className="mb-1 font-medium text-[#090909] dark:text-[#e8e8e8]">Remetentes não reconhecidos (amostra):</div>
+              {result.noMatchSamples.map((s) => (
+                <div key={s.convId} className="font-mono">
+                  Conv {s.convId}: "{s.senderName}" &lt;{s.senderEmail || "sem email"}&gt;
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
