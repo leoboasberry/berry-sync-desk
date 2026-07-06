@@ -508,8 +508,17 @@ function AtendimentoPage() {
         map.set(key, merged);
       }
     }
-    // Sort by most recent activity
-    return Array.from(map.values()).sort((a, b) => (b.last_activity_at ?? 0) - (a.last_activity_at ?? 0));
+    // Sort: 1) unread  2) awaiting response (last msg from lead)  3) rest by activity
+    function convPriority(c: any): number {
+      if ((c.unread_count ?? 0) > 0) return 0;
+      if (c.last_message?.message_type === 0) return 1;
+      return 2;
+    }
+    return Array.from(map.values()).sort((a, b) => {
+      const pa = convPriority(a); const pb = convPriority(b);
+      if (pa !== pb) return pa - pb;
+      return (b.last_activity_at ?? 0) - (a.last_activity_at ?? 0);
+    });
   }, [displayedConversations]);
 
   useEffect(() => {
@@ -1806,6 +1815,7 @@ function ConversationRow({ conv, active, onClick, onMarkUnread }: { conv: any; a
     ? new Date(conv.last_activity_at * 1000).toISOString()
     : new Date().toISOString();
   const unread = (conv.unread_count ?? 0) > 0;
+  const awaitingReply = !unread && conv.last_message?.message_type === 0;
 
   return (
     <div
@@ -1823,7 +1833,12 @@ function ConversationRow({ conv, active, onClick, onMarkUnread }: { conv: any; a
           <span className="truncate text-sm font-semibold text-[#090909] dark:text-[#e8e8e8]">{name}</span>
           <span className="shrink-0 text-[11px] text-[#666] dark:text-[#909090]">{timeAgo(updatedAt)}</span>
         </div>
-        <p className="mt-0.5 truncate text-xs text-[#666] dark:text-[#909090]">{preview}</p>
+        {awaitingReply && (
+          <span className="mt-0.5 inline-block text-[10px] font-medium text-amber-600 dark:text-amber-400">
+            Aguardando resposta
+          </span>
+        )}
+        <p className="truncate text-xs text-[#666] dark:text-[#909090]">{preview}</p>
       </div>
       <div className="mt-0.5 flex shrink-0 items-center gap-1">
         {hovered && (
