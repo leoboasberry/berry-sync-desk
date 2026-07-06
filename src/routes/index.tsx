@@ -33,7 +33,6 @@ import {
   getHubSpotOwners,
   upsertContactOwnerCache,
   getContactOwnersBatch,
-  preloadContactOwnerCache,
   DEFAULT_HS_FIELDS,
   type HsField,
 } from "@/lib/hubspot.functions";
@@ -592,26 +591,24 @@ function AtendimentoPage() {
               });
               // Cache is ready — filter can now apply correctly
               setOwnerCacheReady(true);
-              // Fetch from HubSpot for phones not yet in cache — chunked to avoid timeout
+              // Fetch owner from HubSpot for phones not yet in cache — one at a time (proven path)
               const uncached = phones.filter((p) => !cached.has(p));
               if (uncached.length) {
-                const CHUNK = 5;
-                const runChunks = async () => {
-                  for (let i = 0; i < uncached.length; i += CHUNK) {
-                    const chunk = uncached.slice(i, i + CHUNK);
+                const runPreload = async () => {
+                  for (const phone of uncached) {
                     try {
-                      const results = await preloadContactOwnerCache({ data: { phones: chunk } });
-                      setOwnerCache((prev) => {
-                        const next = { ...prev };
-                        for (const r of results) next[r.phone] = r.hubspot_owner_id;
-                        return next;
+                      const contact = await getHubSpotContactByPhone({
+                        data: { phone, properties: ["hubspot_owner_id"] },
                       });
+                      const ownerId = contact?.properties?.hubspot_owner_id ?? null;
+                      setOwnerCache((prev) => ({ ...prev, [phone]: ownerId }));
+                      upsertContactOwnerCache({ data: { phone, hubspot_owner_id: ownerId } }).catch(console.error);
                     } catch (e) {
-                      console.error("preloadContactOwnerCache chunk error", e);
+                      console.error("owner preload error", phone, e);
                     }
                   }
                 };
-                runChunks();
+                runPreload();
               }
             })
             .catch(() => setOwnerCacheReady(true)); // on error, unblock anyway
