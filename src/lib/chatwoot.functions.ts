@@ -30,25 +30,43 @@ async function getChatwootSettings() {
   return { ...data, url: data.chatwoot_url!.trim().replace(/\/$/, "") };
 }
 
+async function fetchAllConversationPages(
+  url: string,
+  token: string,
+  assigneeType: "assigned" | "unassigned"
+): Promise<any[]> {
+  const all: any[] = [];
+  let page = 1;
+  while (true) {
+    const res = await fetch(
+      `${url}&assignee_type=${assigneeType}&page=${page}`,
+      { headers: { api_access_token: token } }
+    );
+    if (!res.ok) break;
+    const json = await res.json();
+    const batch: any[] = json.data?.payload ?? [];
+    all.push(...batch);
+    if (batch.length < 25) break;
+    page++;
+  }
+  return all;
+}
+
 export const getChatwootConversations = createServerFn({ method: "POST" })
   .inputValidator((data: { status: "open" | "pending" | "resolved" }) => data)
   .handler(async ({ data }) => {
     const s = await getChatwootSettings();
-    const all: any[] = [];
-    let page = 1;
-    while (true) {
-      const res = await fetch(
-        `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/conversations?status=${data.status}&assignee_type=all&page=${page}`,
-        { headers: { api_access_token: s.chatwoot_token! } }
-      );
-      if (!res.ok) throw new Error(`Chatwoot error: ${res.status}`);
-      const json = await res.json();
-      const batch: any[] = json.data?.payload ?? [];
-      all.push(...batch);
-      if (batch.length < 25) break;
-      page++;
-    }
-    return all;
+    const base = `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/conversations?status=${data.status}`;
+    const [assigned, unassigned] = await Promise.all([
+      fetchAllConversationPages(base, s.chatwoot_token!, "assigned"),
+      fetchAllConversationPages(base, s.chatwoot_token!, "unassigned"),
+    ]);
+    // Merge and deduplicate by id, sort by last_activity_at desc
+    const byId = new Map<number, any>();
+    for (const c of [...assigned, ...unassigned]) byId.set(c.id, c);
+    return Array.from(byId.values()).sort(
+      (a, b) => (b.last_activity_at ?? 0) - (a.last_activity_at ?? 0)
+    );
   });
 
 export const getAllChatwootConversations = createServerFn({ method: "POST" })
