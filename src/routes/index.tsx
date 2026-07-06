@@ -290,6 +290,8 @@ function AtendimentoPage() {
   const [tab, setTab] = useState<Tab>(routeSearch.status ?? "open");
   const [search, setSearch] = useState("");
   const [conversations, setConversations] = useState<any[]>([]);
+  const [searchAllConvs, setSearchAllConvs] = useState<any[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
   const [activeId, setActiveId] = useState<number | null>(null);
   const [activePhone, setActivePhone] = useState<string | null>(null);
   const [messages, setMessages] = useState<any[]>([]);
@@ -452,6 +454,27 @@ function AtendimentoPage() {
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, []);
+
+  // When search is active, load conversations from all statuses
+  useEffect(() => {
+    if (!search.trim()) { setSearchAllConvs([]); return; }
+    setSearchLoading(true);
+    Promise.all([
+      getChatwootConversations({ data: { status: "open" } }),
+      getChatwootConversations({ data: { status: "pending" } }),
+      getChatwootConversations({ data: { status: "resolved" } }),
+    ])
+      .then(([open, pending, resolved]) => {
+        const byId = new Map<number, any>();
+        for (const c of [...open, ...pending, ...resolved]) {
+          const normalized = { ...c, last_message: c.last_non_activity_message ?? c.last_message ?? null };
+          byId.set(c.id, normalized);
+        }
+        setSearchAllConvs(Array.from(byId.values()));
+      })
+      .catch(console.error)
+      .finally(() => setSearchLoading(false));
+  }, [search]);
 
   const displayedConversations = useMemo(() => {
     if (myRole !== "agent" || myChatwootAgentId === null) return conversations;
@@ -624,17 +647,29 @@ function AtendimentoPage() {
   }, [activeId]);
 
   const visible = useMemo(() => {
-    const q = search.toLowerCase();
-    return groupedConversations.filter((c) => {
-      if (q === "") return true;
+    const q = search.toLowerCase().trim();
+    if (!q) return groupedConversations;
+
+    // When searching, use all-status pool grouped by phone
+    const pool = searchAllConvs.length > 0 ? searchAllConvs : groupedConversations;
+    const map = new Map<string, any>();
+    for (const c of pool) {
+      const rawPhone = c.meta?.sender?.phone_number ?? "";
+      const phone = normalizePhone(rawPhone) || rawPhone;
+      const key = phone || `no-phone-${c.id}`;
+      if (!map.has(key)) map.set(key, { ...c, _phone: phone, _convIds: [c.id] });
+    }
+    const allGrouped = Array.from(map.values());
+
+    const qDigits = q.replace(/\D/g, "");
+    return allGrouped.filter((c) => {
       const name = (c.meta?.sender?.name ?? "").toLowerCase();
       const preview = (c.last_message?.content ?? "").toLowerCase();
-      const phone = (c._phone ?? c.meta?.sender?.phone_number ?? "").replace(/\D/g, "");
-      const qDigits = q.replace(/\D/g, "");
+      const phone = (c._phone ?? "").replace(/\D/g, "");
       const phoneMatch = qDigits.length >= 4 && phone.includes(qDigits);
       return name.includes(q) || preview.includes(q) || phoneMatch;
     });
-  }, [groupedConversations, search]);
+  }, [groupedConversations, searchAllConvs, search]);
 
   // If role=agent and the selected conversation is not in the filtered list, fix the selection
   useEffect(() => {
@@ -963,7 +998,7 @@ function AtendimentoPage() {
           ))}
         </div>
         <div className="flex-1 overflow-y-auto">
-          {loadingConvs ? (
+          {loadingConvs || searchLoading ? (
             <div className="flex h-full items-center justify-center">
               <Loader2 className="h-5 w-5 animate-spin text-[#999] dark:text-[#686868]" />
             </div>
