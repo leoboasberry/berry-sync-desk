@@ -665,8 +665,9 @@ function AtendimentoPage() {
     return allGrouped.filter((c) => {
       const name = (c.meta?.sender?.name ?? "").toLowerCase();
       const preview = (c.last_message?.content ?? "").toLowerCase();
-      const phone = (c._phone ?? "").replace(/\D/g, "");
-      const phoneMatch = qDigits.length >= 4 && phone.includes(qDigits);
+      const phoneNorm = (c._phone ?? "").replace(/\D/g, "");
+      const phoneRaw = (c.meta?.sender?.phone_number ?? "").replace(/\D/g, "");
+      const phoneMatch = qDigits.length >= 4 && (phoneNorm.includes(qDigits) || phoneRaw.includes(qDigits));
       return name.includes(q) || preview.includes(q) || phoneMatch;
     });
   }, [groupedConversations, searchAllConvs, search]);
