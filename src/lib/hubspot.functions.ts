@@ -262,6 +262,50 @@ export const getHubSpotOwners = createServerFn({ method: "POST" })
     return (json.results ?? []) as Array<{ id: string; firstName: string; lastName: string; email: string }>;
   });
 
+export const debugHubSpotContact = createServerFn({ method: "POST" })
+  .inputValidator((data: { contactId: string; properties: string[] }) => data)
+  .handler(async ({ data }) => {
+    const token = await getHsToken();
+
+    // 1. Fetch contact properties via contacts API
+    const contactRes = await fetch(
+      `https://api.hubapi.com/crm/v3/objects/contacts/${data.contactId}?properties=${data.properties.join(",")}`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    const contactJson = contactRes.ok ? await contactRes.json() : { error: contactRes.status };
+
+    // 2. Try leads API — find lead associated with this contact
+    const leadsRes = await fetch(
+      `https://api.hubapi.com/crm/v3/objects/leads?limit=10`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    const leadsAvailable = leadsRes.status !== 404 && leadsRes.status !== 403;
+
+    // 3. Fetch lead associated with contact
+    const assocRes = await fetch(
+      `https://api.hubapi.com/crm/v4/objects/contacts/${data.contactId}/associations/leads`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    const assocJson = assocRes.ok ? await assocRes.json() : null;
+    const leadId = assocJson?.results?.[0]?.toObjectId ?? null;
+
+    let leadProps: any = null;
+    if (leadId) {
+      const leadRes = await fetch(
+        `https://api.hubapi.com/crm/v3/objects/leads/${leadId}?properties=${data.properties.join(",")}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      leadProps = leadRes.ok ? await leadRes.json() : { error: leadRes.status };
+    }
+
+    return {
+      contactProperties: contactJson?.properties ?? {},
+      leadsAvailable,
+      leadId,
+      leadProperties: leadProps?.properties ?? null,
+    };
+  });
+
 export const getHubSpotProperties = createServerFn({ method: "POST" })
   .handler(async () => {
     const token = await getHsToken();

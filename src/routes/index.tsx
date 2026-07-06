@@ -22,6 +22,7 @@ import {
   markConversationUnread,
   getChatwootConversationById,
 } from "@/lib/chatwoot.functions";
+import { debugHubSpotContact } from "@/lib/hubspot.functions";
 import {
   getHubSpotContactByPhone,
   getHubSpotVisibleFields,
@@ -1992,14 +1993,41 @@ function LeadPanel({
         <div className="rounded-[10px] border border-[#e5e5e5] dark:border-[#2a2a2a] bg-white dark:bg-[#1a1a1a] p-4">
           <div className="mb-3 flex items-center justify-between">
             <span className="label-uppercase">HubSpot CRM</span>
-            <button
-              onClick={onHubRefresh}
-              disabled={hubLoading}
-              title="Atualizar dados do HubSpot"
-              className="text-[#999] hover:text-[#090909] dark:hover:text-[#e8e8e8] transition-colors disabled:opacity-40"
-            >
-              <RotateCcw className={cn("h-3.5 w-3.5", hubLoading && "animate-spin")} />
-            </button>
+            <div className="flex items-center gap-2">
+              {hubContact?.id && (
+                <button
+                  onClick={async () => {
+                    const result = await debugHubSpotContact({
+                      data: { contactId: String(hubContact.id), properties: visibleFields.map((f) => f.name) }
+                    });
+                    console.log("[HubSpot Debug]", result);
+                    if (result.leadId) {
+                      toast.info(`Lead associado: ${result.leadId}`, {
+                        description: result.leadProperties
+                          ? `Propriedades do Lead: ${JSON.stringify(result.leadProperties)}`
+                          : "Lead sem propriedades visíveis"
+                      });
+                    } else {
+                      toast.info("Sem Lead associado a este contato", {
+                        description: "Os dados vêm direto do objeto Contact"
+                      });
+                    }
+                  }}
+                  title="Diagnóstico: verificar origem dos campos"
+                  className="text-[#bbb] hover:text-[#090909] dark:hover:text-[#e8e8e8] transition-colors text-[10px] font-mono"
+                >
+                  debug
+                </button>
+              )}
+              <button
+                onClick={onHubRefresh}
+                disabled={hubLoading}
+                title="Atualizar dados do HubSpot"
+                className="text-[#999] hover:text-[#090909] dark:hover:text-[#e8e8e8] transition-colors disabled:opacity-40"
+              >
+                <RotateCcw className={cn("h-3.5 w-3.5", hubLoading && "animate-spin")} />
+              </button>
+            </div>
           </div>
           <div className="space-y-2.5 text-sm">
             {visibleFields.map((f) => {
