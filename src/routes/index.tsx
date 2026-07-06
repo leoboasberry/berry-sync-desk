@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 import { AppShell } from "@/components/AppShell";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -295,6 +296,8 @@ function AtendimentoPage() {
   const [backfilling, setBackfilling] = useState(false);
   const [hubContact, setHubContact] = useState<any>(null);
   const [hubLoading, setHubLoading] = useState(false);
+  const [hubChangedFields, setHubChangedFields] = useState<Set<string>>(new Set());
+  const prevHubPropsRef = useRef<Record<string, any>>({});
   const [draft, setDraft] = useState("");
   const [loadingConvs, setLoadingConvs] = useState(true);
   const [loadingMsgs, setLoadingMsgs] = useState(false);
@@ -579,20 +582,40 @@ function AtendimentoPage() {
     }, 15_000);
 
     setHubContact(null);
+    setHubChangedFields(new Set());
+    prevHubPropsRef.current = {};
     if (phone) {
       setHubLoading(true);
       getHubSpotContactByPhone({ data: { phone, properties: visibleFields.map((f) => f.name) } })
-        .then(setHubContact)
+        .then((contact) => {
+          setHubContact(contact);
+          prevHubPropsRef.current = contact?.properties ?? {};
+        })
         .catch(console.error)
         .finally(() => setHubLoading(false));
     } else {
       setHubLoading(false);
     }
 
-    // HubSpot refresh every 5 minutes while conversation is open
+    // HubSpot refresh every 5 minutes — detect and highlight changed fields
     const hubPoll = phone ? setInterval(() => {
       getHubSpotContactByPhone({ data: { phone, properties: visibleFields.map((f) => f.name) } })
-        .then(setHubContact)
+        .then((contact) => {
+          const prev = prevHubPropsRef.current;
+          const next = contact?.properties ?? {};
+          const changed = new Set<string>();
+          for (const key of Object.keys(next)) {
+            if (prev[key] !== undefined && String(prev[key]) !== String(next[key] ?? "")) {
+              changed.add(key);
+            }
+          }
+          if (changed.size > 0) {
+            setHubChangedFields(changed);
+            toast.info("HubSpot atualizado", { description: `${changed.size} campo(s) mudaram para este contato.` });
+          }
+          prevHubPropsRef.current = next;
+          setHubContact(contact);
+        })
         .catch(console.error);
     }, 5 * 60_000) : null;
 
@@ -1466,6 +1489,7 @@ function AtendimentoPage() {
             messages={messages}
             hubContact={hubContact}
             hubLoading={hubLoading}
+            hubChangedFields={hubChangedFields}
             visibleFields={visibleFields}
             onConvUpdate={async () => {
               const updated = await getChatwootConversations({ data: { status: tab } });
@@ -1796,12 +1820,13 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 function LeadPanel({
-  conv, messages, hubContact, hubLoading, visibleFields, onConvUpdate,
+  conv, messages, hubContact, hubLoading, hubChangedFields, visibleFields, onConvUpdate,
 }: {
   conv: any;
   messages: any[];
   hubContact: any | null;
   hubLoading: boolean;
+  hubChangedFields: Set<string>;
   visibleFields: HsField[];
   onConvUpdate: () => Promise<void>;
 }) {
@@ -1955,7 +1980,8 @@ function LeadPanel({
               const display = isOwnerField
                 ? (ownersMap[String(value)] ?? String(value))
                 : formatHsValue(String(value));
-              return <Field key={f.name} label={f.label} value={display} />;
+              const changed = hubChangedFields.has(f.name);
+              return <Field key={f.name} label={f.label} value={display} changed={changed} />;
             })}
           </div>
         </div>
@@ -2092,10 +2118,13 @@ function formatHsValue(raw: string): string {
   return raw;
 }
 
-function Field({ label, value }: { label: string; value: string }) {
+function Field({ label, value, changed }: { label: string; value: string; changed?: boolean }) {
   return (
-    <div>
-      <div className="label-uppercase mb-0.5">{label}</div>
+    <div className={changed ? "rounded-md bg-amber-50 dark:bg-amber-900/20 px-2 py-1 -mx-2" : ""}>
+      <div className="flex items-center gap-1.5">
+        <span className="label-uppercase mb-0.5">{label}</span>
+        {changed && <span className="mb-0.5 rounded-full bg-amber-400 px-1.5 py-0.5 text-[9px] font-bold uppercase text-amber-900">Atualizado</span>}
+      </div>
       <div className="font-medium text-[#090909] dark:text-[#e8e8e8]">{value}</div>
     </div>
   );
