@@ -34,13 +34,21 @@ export const getChatwootConversations = createServerFn({ method: "POST" })
   .inputValidator((data: { status: "open" | "pending" | "resolved" }) => data)
   .handler(async ({ data }) => {
     const s = await getChatwootSettings();
-    const res = await fetch(
-      `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/conversations?status=${data.status}&assignee_type=all&page=1`,
-      { headers: { api_access_token: s.chatwoot_token! } }
-    );
-    if (!res.ok) throw new Error(`Chatwoot error: ${res.status}`);
-    const json = await res.json();
-    return (json.data?.payload ?? []) as any[];
+    const all: any[] = [];
+    let page = 1;
+    while (true) {
+      const res = await fetch(
+        `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/conversations?status=${data.status}&assignee_type=all&page=${page}`,
+        { headers: { api_access_token: s.chatwoot_token! } }
+      );
+      if (!res.ok) throw new Error(`Chatwoot error: ${res.status}`);
+      const json = await res.json();
+      const batch: any[] = json.data?.payload ?? [];
+      all.push(...batch);
+      if (batch.length < 25) break;
+      page++;
+    }
+    return all;
   });
 
 export const getAllChatwootConversations = createServerFn({ method: "POST" })
