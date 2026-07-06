@@ -592,18 +592,26 @@ function AtendimentoPage() {
               });
               // Cache is ready — filter can now apply correctly
               setOwnerCacheReady(true);
-              // Fetch from HubSpot for phones not yet in cache (background, no flash)
+              // Fetch from HubSpot for phones not yet in cache — chunked to avoid timeout
               const uncached = phones.filter((p) => !cached.has(p));
               if (uncached.length) {
-                preloadContactOwnerCache({ data: { phones: uncached } })
-                  .then((results) => {
-                    setOwnerCache((prev) => {
-                      const next = { ...prev };
-                      for (const r of results) next[r.phone] = r.hubspot_owner_id;
-                      return next;
-                    });
-                  })
-                  .catch(console.error);
+                const CHUNK = 5;
+                const runChunks = async () => {
+                  for (let i = 0; i < uncached.length; i += CHUNK) {
+                    const chunk = uncached.slice(i, i + CHUNK);
+                    try {
+                      const results = await preloadContactOwnerCache({ data: { phones: chunk } });
+                      setOwnerCache((prev) => {
+                        const next = { ...prev };
+                        for (const r of results) next[r.phone] = r.hubspot_owner_id;
+                        return next;
+                      });
+                    } catch (e) {
+                      console.error("preloadContactOwnerCache chunk error", e);
+                    }
+                  }
+                };
+                runChunks();
               }
             })
             .catch(() => setOwnerCacheReady(true)); // on error, unblock anyway
