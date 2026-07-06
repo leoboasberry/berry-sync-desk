@@ -9,7 +9,9 @@ import {
   getChatwootConversations,
   getChatwootMessages,
   getContactHistory,
+  getContactHistoryById,
   backfillContactHistory,
+  deleteHistoryMessage,
   sendChatwootMessage,
   sendChatwootAttachment,
   updateChatwootConversationStatus,
@@ -33,7 +35,7 @@ import {
   type HsField,
 } from "@/lib/hubspot.functions";
 import { supabase } from "@/integrations/supabase/client";
-import { Search, Send, Loader2, UserPlus, Play, Pause, ZoomIn, Paperclip, Smile, X, LayoutTemplate, ChevronLeft, Mic, Square, Volume2, VolumeX, Check, CheckCheck, AlertCircle, RotateCcw, Link } from "lucide-react";
+import { Search, Send, Loader2, UserPlus, Play, Pause, ZoomIn, Paperclip, Smile, X, LayoutTemplate, ChevronLeft, Mic, Square, Volume2, VolumeX, Check, CheckCheck, AlertCircle, RotateCcw, Link, Trash2 } from "lucide-react";
 
 function playNotificationSound() {
   const Ctx = window.AudioContext ?? (window as any).webkitAudioContext;
@@ -306,6 +308,7 @@ function AtendimentoPage() {
   const [loadingMsgs, setLoadingMsgs] = useState(false);
   const [sending, setSending] = useState(false);
   const [agentName, setAgentName] = useState("");
+  const [agentEmail, setAgentEmail] = useState("");
   const [myRole, setMyRole] = useState<"admin" | "agent" | null>(null);
   const [myChatwootAgentId, setMyChatwootAgentId] = useState<number | null>(null);
   const [attachFile, setAttachFile] = useState<AttachFile | null>(null);
@@ -403,7 +406,8 @@ function AtendimentoPage() {
 
           if (activeIdRef.current) {
             getChatwootMessages({ data: { conversationId: activeIdRef.current } })
-              .then((newMsgs) => {
+              .then((result) => {
+                const newMsgs = result.msgs;
                 if (isMessageCreated && soundEnabledRef.current) {
                   const prevIds = new Set(prevMessagesRef.current.map((m: any) => m.id));
                   const recentlySentOwn = Date.now() - lastSentRef.current < 3000;
@@ -416,6 +420,9 @@ function AtendimentoPage() {
                 }
                 prevMessagesRef.current = newMsgs;
                 setMessages(newMsgs);
+                setConversations((prev) => prev.map((c) =>
+                  c.id === activeIdRef.current ? { ...c, can_reply: result.can_reply } : c
+                ));
               })
               .catch(console.error);
           } else if (isMessageCreated && soundEnabledRef.current) {
@@ -437,6 +444,8 @@ function AtendimentoPage() {
       if (!u.user) return;
       const { data } = await supabase.from("agents").select("name, role, email").eq("id", u.user.id).maybeSingle();
       if (data?.name) setAgentName(data.name);
+      const email = u.user.email ?? (data as any)?.email ?? "";
+      if (email) setAgentEmail(email);
       const role = (data?.role ?? "agent") as "admin" | "agent";
       setMyRole(role);
       if (role === "agent") {
@@ -592,17 +601,25 @@ function AtendimentoPage() {
 
     if (!activeId) { setMessages([]); setHistoryMessages([]); setHubContact(null); return; }
 
-    const phone = activePhone ?? normalizePhone(conversations.find((c) => c.id === activeId)?.meta?.sender?.phone_number);
+    const activeConv = conversations.find((c) => c.id === activeId) ?? searchAllConvs.find((c) => c.id === activeId);
+    const phone = activePhone ?? normalizePhone(activeConv?.meta?.sender?.phone_number);
 
     setLoadingMsgs(true);
+
+    const applyMsgResult = (result: { msgs: any[]; can_reply: boolean }, convId: number) => {
+      setMessages(result.msgs);
+      setConversations((prev) => prev.map((c) =>
+        c.id === convId ? { ...c, can_reply: result.can_reply } : c
+      ));
+    };
 
     // Load current conversation messages (sync to history) + full contact history in parallel
     Promise.all([
       getChatwootMessages({ data: { conversationId: activeId, contactPhone: phone || undefined } }),
       phone ? getContactHistory({ data: { contactPhone: phone } }) : Promise.resolve([]),
     ])
-      .then(([msgs, history]) => {
-        setMessages(msgs);
+      .then(([result, history]) => {
+        applyMsgResult(result, activeId);
         setHistoryMessages(history);
         // If history is empty, trigger a backfill in the background
         if (phone && history.length === 0) {
@@ -620,8 +637,8 @@ function AtendimentoPage() {
     // Poll every 15s to pick up delivery status updates from WhatsApp webhooks
     const poll = setInterval(() => {
       getChatwootMessages({ data: { conversationId: activeId, contactPhone: phone || undefined } })
-        .then((msgs) => {
-          setMessages(msgs);
+        .then((result) => {
+          applyMsgResult(result, activeId);
           if (phone) getContactHistory({ data: { contactPhone: phone } }).then(setHistoryMessages).catch(() => {});
         })
         .catch(() => {});
@@ -695,18 +712,24 @@ function AtendimentoPage() {
   }, [groupedConversations, searchAllConvs, search]);
 
   // If role=agent and the selected conversation is not in the filtered list, fix the selection
+  // Exception: cross-status search results are valid even if not in the current tab
   useEffect(() => {
     if (myRole !== "agent" || myChatwootAgentId === null) return;
     if (activeId === null) return;
-    const isAllowed = groupedConversations.some((c) => c._convIds?.includes(activeId) ?? c.id === activeId);
-    if (!isAllowed) {
+    const isInCurrentTab = groupedConversations.some((c) => c._convIds?.includes(activeId) ?? c.id === activeId);
+    const isInSearchResults = searchAllConvs.some((c) => c.id === activeId);
+    if (!isInCurrentTab && !isInSearchResults) {
       const first = groupedConversations[0];
       setActiveId(first?.id ?? null);
       setActivePhone(first?._phone ?? null);
     }
-  }, [groupedConversations, myRole, myChatwootAgentId]);
+  }, [groupedConversations, searchAllConvs, activeId, myRole, myChatwootAgentId]);
 
-  const active = conversations.find((c) => c.id === activeId) ?? null;
+  // Also look in searchAllConvs for cross-status conversations (e.g. resolved shown via search)
+  const active = useMemo(
+    () => conversations.find((c) => c.id === activeId) ?? searchAllConvs.find((c) => c.id === activeId) ?? null,
+    [conversations, searchAllConvs, activeId]
+  );
 
   // Scroll to bottom when messages load or conversation changes
   useEffect(() => {
@@ -860,7 +883,10 @@ function AtendimentoPage() {
         assignChatwootConversation({ data: { conversationId: activeId, assigneeId: myChatwootAgentId } }).catch(() => {});
       }
       const updated = await getChatwootMessages({ data: { conversationId: activeId } });
-      setMessages(updated);
+      setMessages(updated.msgs);
+      setConversations((prev) => prev.map((c) =>
+        c.id === activeId ? { ...c, can_reply: updated.can_reply } : c
+      ));
     } catch (e) {
       console.error(e);
     } finally {
@@ -1176,10 +1202,12 @@ function AtendimentoPage() {
                     );
                   }
 
+                  const canDeleteHistory = agentEmail === "leonardo.villas@berry.com.br" && m.fromHistory;
+
                   return (
                     <div key={m.id}>
                       {separator}
-                    <div className={cn("flex", isAgent ? "justify-end" : "justify-start")}>
+                    <div className={cn("flex group/msg", isAgent ? "justify-end" : "justify-start")}>
                       <div className="max-w-[70%]">
                         {/* Text bubble */}
                         {m.text && (
@@ -1254,7 +1282,7 @@ function AtendimentoPage() {
                                 try {
                                   await retryChatwootMessage({ data: { conversationId: m.conversationId ?? active!.id, messageId: m.chatwootMessageId } });
                                   const updated = await getChatwootMessages({ data: { conversationId: active!.id } });
-                                  setMessages(updated);
+                                  setMessages(updated.msgs);
                                 } catch {
                                   // retry may not be supported for all channel types
                                 }
@@ -1277,6 +1305,27 @@ function AtendimentoPage() {
                           )}
                         </div>
                       </div>
+
+                      {/* Delete from history — only visible to leonardo.villas@berry.com.br */}
+                      {canDeleteHistory && (
+                        <button
+                          title="Apagar do histórico"
+                          onClick={async () => {
+                            await deleteHistoryMessage({ data: { chatwootMessageId: m.id } });
+                            const phone = activePhone ?? normalizePhone(
+                              (conversations.find((c) => c.id === activeId) ?? searchAllConvs.find((c) => c.id === activeId))?.meta?.sender?.phone_number
+                            );
+                            if (phone) getContactHistory({ data: { contactPhone: phone } }).then(setHistoryMessages).catch(() => {});
+                          }}
+                          className={cn(
+                            "self-end mb-1 shrink-0 rounded p-1 opacity-0 transition-opacity group-hover/msg:opacity-100",
+                            isAgent ? "mr-2 order-first" : "ml-2",
+                            "text-[#aaa] hover:text-red-500 dark:text-[#555] dark:hover:text-red-400"
+                          )}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      )}
                     </div>
                     </div>
                   );

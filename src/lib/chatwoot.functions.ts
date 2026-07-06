@@ -133,18 +133,31 @@ export const getChatwootMessages = createServerFn({ method: "POST" })
   .inputValidator((data: { conversationId: number; contactPhone?: string }) => data)
   .handler(async ({ data }) => {
     const s = await getChatwootSettings();
-    const res = await fetch(
-      `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/conversations/${data.conversationId}/messages`,
-      { headers: { api_access_token: s.chatwoot_token! } }
-    );
-    if (!res.ok) throw new Error(`Chatwoot error: ${res.status}`);
-    const json = await res.json();
+    // Fetch messages and conversation metadata in parallel
+    // We derive the authoritative phone from the conversation itself to avoid
+    // stale-state contamination in messages_history (client-provided contactPhone
+    // can lag behind when conversations are switched quickly)
+    const [msgRes, convRes] = await Promise.all([
+      fetch(
+        `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/conversations/${data.conversationId}/messages`,
+        { headers: { api_access_token: s.chatwoot_token! } }
+      ),
+      fetch(
+        `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/conversations/${data.conversationId}`,
+        { headers: { api_access_token: s.chatwoot_token! } }
+      ),
+    ]);
+    if (!msgRes.ok) throw new Error(`Chatwoot error: ${msgRes.status}`);
+    const json = await msgRes.json();
     const msgs = (json.payload ?? []) as any[];
-    // Proactively sync to history if phone is provided
-    if (data.contactPhone) {
-      await upsertMessagesToHistory(msgs, data.contactPhone, data.conversationId);
+    // Use the phone from the conversation itself — never trust the client-provided value
+    const convData = convRes.ok ? await convRes.json() : null;
+    const authoritativePhone = convData ? normalizePhone(convData.meta?.sender?.phone_number) : "";
+    if (authoritativePhone) {
+      await upsertMessagesToHistory(msgs, authoritativePhone, data.conversationId);
     }
-    return msgs;
+    // Return can_reply alongside messages so the client can detect expired 24h windows
+    return { msgs, can_reply: convData?.can_reply ?? true };
   });
 
 export const getContactHistory = createServerFn({ method: "POST" })
@@ -155,6 +168,41 @@ export const getContactHistory = createServerFn({ method: "POST" })
       .from("messages_history")
       .select("*")
       .eq("contact_phone", phone)
+      .order("created_at_chatwoot", { ascending: true });
+    if (error) throw new Error(error.message);
+    return (rows ?? []) as any[];
+  });
+
+// Fetch history using Chatwoot contact_id — avoids phone normalization collisions
+// (two different contacts with phones that normalize to the same value won't be merged)
+export const deleteHistoryMessage = createServerFn({ method: "POST" })
+  .inputValidator((data: { chatwootMessageId: number }) => data)
+  .handler(async ({ data }) => {
+    const { error } = await (supabaseAdmin as any)
+      .from("messages_history")
+      .delete()
+      .eq("chatwoot_message_id", data.chatwootMessageId);
+    if (error) throw new Error(error.message);
+    return { ok: true };
+  });
+
+export const getContactHistoryById = createServerFn({ method: "POST" })
+  .inputValidator((data: { chatwootContactId: number }) => data)
+  .handler(async ({ data }) => {
+    const s = await getChatwootSettings();
+    // Get all conversation IDs for this specific Chatwoot contact
+    const res = await fetch(
+      `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/contacts/${data.chatwootContactId}/conversations`,
+      { headers: { api_access_token: s.chatwoot_token! } }
+    );
+    if (!res.ok) return [];
+    const json = await res.json();
+    const convIds: number[] = (json.payload ?? []).map((c: any) => c.id as number);
+    if (!convIds.length) return [];
+    const { data: rows, error } = await (supabaseAdmin as any)
+      .from("messages_history")
+      .select("*")
+      .in("conversation_id", convIds)
       .order("created_at_chatwoot", { ascending: true });
     if (error) throw new Error(error.message);
     return (rows ?? []) as any[];
