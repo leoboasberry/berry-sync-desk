@@ -407,7 +407,7 @@ function Field({
 }
 
 function FieldsTab() {
-  const [properties, setProperties] = useState<Array<{ name: string; label: string; groupName: string }>>([]);
+  const [properties, setProperties] = useState<Array<{ name: string; label: string; groupName: string; referencedObjectType?: string }>>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -444,7 +444,7 @@ function FieldsTab() {
     setSaving(true);
     const fields: HsField[] = properties
       .filter((p) => selected.has(p.name))
-      .map((p) => ({ name: p.name, label: p.label }));
+      .map((p) => ({ name: p.name, label: p.label, ...(p.referencedObjectType ? { referencedObjectType: p.referencedObjectType } : {}) }));
     try {
       await setHubSpotVisibleFields({ data: { fields } });
       toast.success(`${fields.length} campos salvos`);

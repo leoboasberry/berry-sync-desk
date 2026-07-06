@@ -1,7 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
 
-export type HsField = { name: string; label: string };
+export type HsField = { name: string; label: string; referencedObjectType?: string };
 export const DEFAULT_HS_FIELDS: HsField[] = [
   { name: "firstname", label: "Primeiro nome" },
   { name: "lastname", label: "Sobrenome" },
@@ -277,5 +277,6 @@ export const getHubSpotProperties = createServerFn({ method: "POST" })
       type: string;
       fieldType: string;
       groupName: string;
+      referencedObjectType?: string;
     }>;
   });
