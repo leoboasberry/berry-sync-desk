@@ -314,6 +314,7 @@ function AtendimentoPage() {
   const [agentEmail, setAgentEmail] = useState("");
   const [myHubspotOwnerId, setMyHubspotOwnerId] = useState<string | null>(null);
   const [ownerCache, setOwnerCache] = useState<Record<string, string | null>>({}); // phone → hubspot_owner_id | null
+  const [ownerCacheReady, setOwnerCacheReady] = useState(false);
   const [myRole, setMyRole] = useState<"admin" | "agent" | null>(null);
   const [myChatwootAgentId, setMyChatwootAgentId] = useState<number | null>(null);
   const [attachFile, setAttachFile] = useState<AttachFile | null>(null);
@@ -512,9 +513,9 @@ function AtendimentoPage() {
         (c) => !c.meta?.assignee?.id || c.meta?.assignee?.id === myChatwootAgentId
       );
     }
-    // HubSpot owner filter: if agent is linked to a HubSpot owner, show only their leads
-    // Conversations with unknown owner (not in cache) or no owner show to everyone
+    // HubSpot owner filter: hold until cache is ready to avoid flash of wrong conversations
     if (myHubspotOwnerId) {
+      if (!ownerCacheReady) return [];
       result = result.filter((c) => {
         const phone = normalizePhone(c.meta?.sender?.phone_number);
         if (!phone || !(phone in ownerCache)) return true; // unknown — show to all
@@ -523,7 +524,7 @@ function AtendimentoPage() {
       });
     }
     return result;
-  }, [conversations, myRole, myChatwootAgentId, myHubspotOwnerId, ownerCache]);
+  }, [conversations, myRole, myChatwootAgentId, myHubspotOwnerId, ownerCache, ownerCacheReady]);
 
   // Group conversations by normalized phone — one entry per contact in the sidebar
   const groupedConversations = useMemo(() => {
@@ -568,6 +569,7 @@ function AtendimentoPage() {
     setActiveId(null);
     setActivePhone(null);
     setMessages([]);
+    setOwnerCacheReady(false);
     getChatwootConversations({ data: { status: tab } })
       .then((convs) => {
         const normalized = convs.map((c: any) => ({
@@ -588,7 +590,9 @@ function AtendimentoPage() {
                 for (const r of rows) next[r.phone] = r.hubspot_owner_id;
                 return next;
               });
-              // Fetch from HubSpot for phones not yet in cache
+              // Cache is ready — filter can now apply correctly
+              setOwnerCacheReady(true);
+              // Fetch from HubSpot for phones not yet in cache (background, no flash)
               const uncached = phones.filter((p) => !cached.has(p));
               if (uncached.length) {
                 preloadContactOwnerCache({ data: { phones: uncached } })
@@ -602,7 +606,9 @@ function AtendimentoPage() {
                   .catch(console.error);
               }
             })
-            .catch(console.error);
+            .catch(() => setOwnerCacheReady(true)); // on error, unblock anyway
+        } else {
+          setOwnerCacheReady(true);
         }
         const convs2 = normalized;
         const pending = pendingConversationIdRef.current;
