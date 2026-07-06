@@ -344,6 +344,9 @@ function AtendimentoPage() {
   const [soundEnabled, setSoundEnabled] = useState(() =>
     localStorage.getItem("berry_sound") !== "off"
   );
+  const [respondedConvIds, setRespondedConvIds] = useState<Set<number>>(() => {
+    try { return new Set(JSON.parse(localStorage.getItem("berry_responded") ?? "[]")); } catch { return new Set(); }
+  });
   const soundEnabledRef = useRef(soundEnabled);
   soundEnabledRef.current = soundEnabled;
   const lastSentRef = useRef<number>(0);
@@ -367,6 +370,16 @@ function AtendimentoPage() {
           const isMessageCreated = ev?.event_type === "message_created";
           const isIncoming = isMessageCreated && ev?.message_type === "incoming";
           const evConvId: number | null = ev?.conversation_id ?? null;
+
+          // Nova mensagem incoming limpa o "marcado como respondido"
+          if (isIncoming && evConvId) {
+            setRespondedConvIds((prev) => {
+              if (!prev.has(evConvId)) return prev;
+              const next = new Set(prev); next.delete(evConvId);
+              localStorage.setItem("berry_responded", JSON.stringify([...next]));
+              return next;
+            });
+          }
 
           // Optimistic local update: bump unread + last_activity_at for non-active incoming messages
           if (isIncoming && evConvId && evConvId !== activeIdRef.current) {
@@ -1020,6 +1033,7 @@ function AtendimentoPage() {
                 key={c._phone ?? c.id}
                 conv={c}
                 active={c._convIds ? c._convIds.includes(activeId) : c.id === activeId}
+                isResponded={respondedConvIds.has(c.id)}
                 onClick={() => {
                   setActiveId(c.id);
                   setActivePhone(c._phone ?? null);
@@ -1035,6 +1049,13 @@ function AtendimentoPage() {
                   setConversations((prev) =>
                     prev.map((x) => x.id === c.id ? { ...x, unread_count: 1 } : x)
                   );
+                }}
+                onMarkResponded={() => {
+                  setRespondedConvIds((prev) => {
+                    const next = new Set(prev); next.add(c.id);
+                    localStorage.setItem("berry_responded", JSON.stringify([...next]));
+                    return next;
+                  });
                 }}
               />
             ))
@@ -1806,7 +1827,7 @@ function ContactAvatar({
   );
 }
 
-function ConversationRow({ conv, active, onClick, onMarkUnread }: { conv: any; active: boolean; onClick: () => void; onMarkUnread: () => void }) {
+function ConversationRow({ conv, active, onClick, onMarkUnread, onMarkResponded, isResponded }: { conv: any; active: boolean; onClick: () => void; onMarkUnread: () => void; onMarkResponded: () => void; isResponded: boolean }) {
   const [hovered, setHovered] = useState(false);
   const [copied, setCopied] = useState(false);
   const name = conv.meta?.sender?.name ?? "Desconhecido";
@@ -1815,7 +1836,7 @@ function ConversationRow({ conv, active, onClick, onMarkUnread }: { conv: any; a
     ? new Date(conv.last_activity_at * 1000).toISOString()
     : new Date().toISOString();
   const unread = (conv.unread_count ?? 0) > 0;
-  const awaitingReply = !unread && conv.last_message?.message_type === 0;
+  const awaitingReply = !unread && !isResponded && conv.last_message?.message_type === 0;
 
   return (
     <div
@@ -1834,7 +1855,7 @@ function ConversationRow({ conv, active, onClick, onMarkUnread }: { conv: any; a
           <span className="shrink-0 text-[11px] text-[#666] dark:text-[#909090]">{timeAgo(updatedAt)}</span>
         </div>
         {awaitingReply && (
-          <span className="mt-0.5 inline-block text-[10px] font-medium text-amber-600 dark:text-amber-400">
+          <span className="mt-0.5 inline-block text-[10px] text-[#999] dark:text-[#686868]">
             Aguardando resposta
           </span>
         )}
@@ -1843,6 +1864,15 @@ function ConversationRow({ conv, active, onClick, onMarkUnread }: { conv: any; a
       <div className="mt-0.5 flex shrink-0 items-center gap-1">
         {hovered && (
           <>
+            {awaitingReply && (
+              <button
+                title="Marcar como respondido"
+                onClick={(e) => { e.stopPropagation(); onMarkResponded(); }}
+                className="rounded p-0.5 text-[#999] hover:text-[#090909] dark:hover:text-[#e8e8e8] transition-colors"
+              >
+                <Check className="h-3 w-3" />
+              </button>
+            )}
             <button
               title="Copiar link da conversa"
               onClick={(e) => {
