@@ -2195,7 +2195,7 @@ function LeadPanel({
                     {formatHsValue(n.properties.hs_timestamp)}
                   </div>
                   <div className="whitespace-pre-wrap text-xs text-[#090909] dark:text-[#e8e8e8]">
-                    {n.properties.hs_note_body}
+                    {stripHtml(n.properties.hs_note_body ?? "")}
                   </div>
                 </div>
               ))}
@@ -2294,6 +2294,21 @@ const dFmt = new Intl.DateTimeFormat("pt-BR", {
   timeZone: "America/Sao_Paulo",
   day: "2-digit", month: "2-digit", year: "numeric",
 });
+
+function stripHtml(html: string): string {
+  return html
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<\/div>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
 
 function formatHsValue(raw: string): string {
   if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(raw)) {
