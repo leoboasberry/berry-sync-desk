@@ -1820,8 +1820,6 @@ function LeadPanel({
   const [ownersMap, setOwnersMap] = useState<Record<string, string>>({});
 
   useEffect(() => {
-    const needsOwner = visibleFields.some((f) => f.name === "hubspot_owner_id" || f.referencedObjectType === "OWNER");
-    if (!needsOwner) return;
     getHubSpotOwners()
       .then((owners) => {
         const map: Record<string, string> = {};
@@ -1952,7 +1950,8 @@ function LeadPanel({
             {visibleFields.map((f) => {
               const value = hubContact.properties?.[f.name];
               if (!value) return null;
-              const isOwnerField = f.name === "hubspot_owner_id" || f.referencedObjectType === "OWNER";
+              const isOwnerField = f.name === "hubspot_owner_id" || f.referencedObjectType === "OWNER"
+                || (Object.keys(ownersMap).length > 0 && ownersMap[String(value)] !== undefined);
               const display = isOwnerField
                 ? (ownersMap[String(value)] ?? String(value))
                 : formatHsValue(String(value));
