@@ -35,7 +35,7 @@ export const getChatwootConversations = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const s = await getChatwootSettings();
     const res = await fetch(
-      `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/conversations?status=${data.status}&page=1`,
+      `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/conversations?status=${data.status}&assignee_type=all&page=1`,
       { headers: { api_access_token: s.chatwoot_token! } }
     );
     if (!res.ok) throw new Error(`Chatwoot error: ${res.status}`);
@@ -51,7 +51,7 @@ export const getAllChatwootConversations = createServerFn({ method: "POST" })
     let page = 1;
     while (true) {
       const res = await fetch(
-        `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/conversations?status=${data.status}&page=${page}`,
+        `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/conversations?status=${data.status}&assignee_type=all&page=${page}`,
         { headers: { api_access_token: s.chatwoot_token! } }
       );
       if (!res.ok) throw new Error(`Chatwoot error: ${res.status}`);
