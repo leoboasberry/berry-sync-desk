@@ -294,6 +294,27 @@ export const getHubSpotOwners = createServerFn({ method: "POST" })
     return (json.results ?? []) as Array<{ id: string; firstName: string; lastName: string; email: string }>;
   });
 
+// Upsert lead owner for a phone into the cache (called after loading HubSpot contact)
+export const upsertContactOwnerCache = createServerFn({ method: "POST" })
+  .inputValidator((data: { phone: string; hubspot_owner_id: string | null }) => data)
+  .handler(async ({ data }) => {
+    await (supabaseAdmin as any)
+      .from("contact_owner_cache")
+      .upsert({ phone: data.phone, hubspot_owner_id: data.hubspot_owner_id, updated_at: new Date().toISOString() }, { onConflict: "phone" });
+  });
+
+// Batch-load owner cache for a list of phones
+export const getContactOwnersBatch = createServerFn({ method: "POST" })
+  .inputValidator((data: { phones: string[] }) => data)
+  .handler(async ({ data }) => {
+    if (!data.phones.length) return [] as Array<{ phone: string; hubspot_owner_id: string | null }>;
+    const { data: rows } = await (supabaseAdmin as any)
+      .from("contact_owner_cache")
+      .select("phone, hubspot_owner_id")
+      .in("phone", data.phones);
+    return (rows ?? []) as Array<{ phone: string; hubspot_owner_id: string | null }>;
+  });
+
 export const debugHubSpotContact = createServerFn({ method: "POST" })
   .inputValidator((data: { contactId: string; properties: string[] }) => data)
   .handler(async ({ data }) => {

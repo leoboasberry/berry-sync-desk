@@ -47,7 +47,7 @@ export const resetAgentPassword = createServerFn({ method: "POST" })
   });
 
 export const updateAgent = createServerFn({ method: "POST" })
-  .inputValidator((data: { id: string; name: string; role: "admin" | "agent"; chatwoot_token?: string }) => data)
+  .inputValidator((data: { id: string; name: string; role: "admin" | "agent"; chatwoot_token?: string; hubspot_owner_id?: string }) => data)
   .handler(async ({ data }) => {
     const { error } = await supabaseAdmin
       .from("agents")
@@ -55,6 +55,7 @@ export const updateAgent = createServerFn({ method: "POST" })
         name: data.name,
         role: data.role,
         ...(data.chatwoot_token !== undefined ? { chatwoot_token: data.chatwoot_token || null } : {}),
+        ...(data.hubspot_owner_id !== undefined ? { hubspot_owner_id: data.hubspot_owner_id || null } : {}),
       } as any)
       .eq("id", data.id);
     if (error) throw new Error(error.message);

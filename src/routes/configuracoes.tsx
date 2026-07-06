@@ -13,6 +13,7 @@ import {
   getHubSpotProperties,
   getHubSpotVisibleFields,
   setHubSpotVisibleFields,
+  getHubSpotOwners,
   DEFAULT_HS_FIELDS,
   type HsField,
 } from "@/lib/hubspot.functions";
@@ -538,7 +539,7 @@ function FieldsTab() {
   );
 }
 
-type Agent = { id: string; name: string; email: string; status: string; role: string; chatwoot_token?: string };
+type Agent = { id: string; name: string; email: string; status: string; role: string; chatwoot_token?: string; hubspot_owner_id?: string };
 
 const STATUS_COLOR: Record<string, string> = {
   online: "#00e186",
@@ -565,7 +566,7 @@ function AgentsTab() {
     setMyId(u.user?.id ?? "");
     const { data } = await supabase
       .from("agents")
-      .select("id, name, email, status, role, chatwoot_token")
+      .select("id, name, email, status, role, chatwoot_token, hubspot_owner_id")
       .order("created_at", { ascending: true });
     setAgents(((data ?? []) as any[]).map((a) => ({ ...a, role: a.role ?? "agent" })));
     setLoading(false);
@@ -717,9 +718,10 @@ function AgentsTab() {
           initial={editTarget}
           emailReadOnly
           showChatwootToken
+          showHubspotOwner
           onClose={() => setEditTarget(null)}
-          onConfirm={async ({ name, role, chatwoot_token }) => {
-            await updateAgent({ data: { id: editTarget.id, name, role, chatwoot_token } });
+          onConfirm={async ({ name, role, chatwoot_token, hubspot_owner_id }) => {
+            await updateAgent({ data: { id: editTarget.id, name, role, chatwoot_token, hubspot_owner_id } });
             toast.success("Agente atualizado");
             load();
           }}
@@ -843,6 +845,7 @@ function AgentModal({
   initial,
   emailReadOnly = false,
   showChatwootToken = false,
+  showHubspotOwner = false,
   onClose,
   onConfirm,
 }: {
@@ -851,18 +854,26 @@ function AgentModal({
   initial?: Agent;
   emailReadOnly?: boolean;
   showChatwootToken?: boolean;
+  showHubspotOwner?: boolean;
   onClose: () => void;
-  onConfirm: (data: { name: string; email: string; role: "admin" | "agent"; chatwoot_token?: string }) => Promise<{ tempPassword: string } | void>;
+  onConfirm: (data: { name: string; email: string; role: "admin" | "agent"; chatwoot_token?: string; hubspot_owner_id?: string }) => Promise<{ tempPassword: string } | void>;
 }) {
   const [name, setName] = useState(initial?.name ?? "");
   const [email, setEmail] = useState(initial?.email ?? "");
   const [role, setRole] = useState<"admin" | "agent">((initial?.role as any) ?? "agent");
   const [chatwootToken, setChatwootToken] = useState(initial?.chatwoot_token ?? "");
   const [showToken, setShowToken] = useState(false);
+  const [hubspotOwnerId, setHubspotOwnerId] = useState(initial?.hubspot_owner_id ?? "");
+  const [hsOwners, setHsOwners] = useState<Array<{ id: string; firstName: string; lastName: string; email: string }>>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState<{ tempPassword: string } | null>(null);
   const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (!showHubspotOwner) return;
+    getHubSpotOwners().then(setHsOwners).catch(console.error);
+  }, [showHubspotOwner]);
 
   async function submit() {
     if (!name.trim()) { setError("Informe o nome."); return; }
@@ -870,7 +881,11 @@ function AgentModal({
     setLoading(true);
     setError("");
     try {
-      const result = await onConfirm({ name: name.trim(), email: email.trim(), role, ...(showChatwootToken ? { chatwoot_token: chatwootToken.trim() } : {}) });
+      const result = await onConfirm({
+        name: name.trim(), email: email.trim(), role,
+        ...(showChatwootToken ? { chatwoot_token: chatwootToken.trim() } : {}),
+        ...(showHubspotOwner ? { hubspot_owner_id: hubspotOwnerId } : {}),
+      });
       if (result?.tempPassword) {
         setDone(result);
       } else {
@@ -984,6 +999,26 @@ function AgentModal({
               </div>
               <p className="text-[11px] text-[#999] dark:text-[#686868]">
                 Encontre em: Chatwoot → Perfil → Token de acesso. Usado para enviar mensagens como este agente.
+              </p>
+            </div>
+          )}
+          {showHubspotOwner && (
+            <div className="space-y-1.5">
+              <Label className="label-uppercase">Owner HubSpot</Label>
+              <select
+                value={hubspotOwnerId}
+                onChange={(e) => setHubspotOwnerId(e.target.value)}
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+              >
+                <option value="">— Sem vínculo (vê todas as conversas) —</option>
+                {hsOwners.map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {[o.firstName, o.lastName].filter(Boolean).join(" ") || o.email} ({o.email})
+                  </option>
+                ))}
+              </select>
+              <p className="text-[11px] text-[#999] dark:text-[#686868]">
+                Vincula este agente a um Owner do HubSpot. Ela verá apenas conversas cujo Lead pertence a este owner.
               </p>
             </div>
           )}

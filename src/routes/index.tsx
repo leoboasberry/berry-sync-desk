@@ -31,6 +31,8 @@ import {
   getHubSpotContactNotes,
   createHubSpotNote,
   getHubSpotOwners,
+  upsertContactOwnerCache,
+  getContactOwnersBatch,
   DEFAULT_HS_FIELDS,
   type HsField,
 } from "@/lib/hubspot.functions";
@@ -309,6 +311,8 @@ function AtendimentoPage() {
   const [sending, setSending] = useState(false);
   const [agentName, setAgentName] = useState("");
   const [agentEmail, setAgentEmail] = useState("");
+  const [myHubspotOwnerId, setMyHubspotOwnerId] = useState<string | null>(null);
+  const [ownerCache, setOwnerCache] = useState<Record<string, string | null>>({}); // phone → hubspot_owner_id | null
   const [myRole, setMyRole] = useState<"admin" | "agent" | null>(null);
   const [myChatwootAgentId, setMyChatwootAgentId] = useState<number | null>(null);
   const [attachFile, setAttachFile] = useState<AttachFile | null>(null);
@@ -442,10 +446,11 @@ function AtendimentoPage() {
     (async () => {
       const { data: u } = await supabase.auth.getUser();
       if (!u.user) return;
-      const { data } = await supabase.from("agents").select("name, role, email").eq("id", u.user.id).maybeSingle();
+      const { data } = await supabase.from("agents").select("name, role, email, hubspot_owner_id").eq("id", u.user.id).maybeSingle();
       if (data?.name) setAgentName(data.name);
       const email = u.user.email ?? (data as any)?.email ?? "";
       if (email) setAgentEmail(email);
+      if ((data as any)?.hubspot_owner_id) setMyHubspotOwnerId((data as any).hubspot_owner_id);
       const role = (data?.role ?? "agent") as "admin" | "agent";
       setMyRole(role);
       if (role === "agent") {
@@ -499,12 +504,25 @@ function AtendimentoPage() {
   }, [search]);
 
   const displayedConversations = useMemo(() => {
-    if (myRole !== "agent" || myChatwootAgentId === null) return conversations;
-    // Agents see their own conversations + unassigned ones (so anyone can pick up)
-    return conversations.filter(
-      (c) => !c.meta?.assignee?.id || c.meta?.assignee?.id === myChatwootAgentId
-    );
-  }, [conversations, myRole, myChatwootAgentId]);
+    let result = conversations;
+    // Agents see only their own + unassigned Chatwoot conversations
+    if (myRole === "agent" && myChatwootAgentId !== null) {
+      result = result.filter(
+        (c) => !c.meta?.assignee?.id || c.meta?.assignee?.id === myChatwootAgentId
+      );
+    }
+    // HubSpot owner filter: if agent is linked to a HubSpot owner, show only their leads
+    // Conversations with unknown owner (not in cache) or no owner show to everyone
+    if (myHubspotOwnerId) {
+      result = result.filter((c) => {
+        const phone = normalizePhone(c.meta?.sender?.phone_number);
+        if (!phone || !(phone in ownerCache)) return true; // unknown — show to all
+        const owner = ownerCache[phone];
+        return owner === null || owner === myHubspotOwnerId;
+      });
+    }
+    return result;
+  }, [conversations, myRole, myChatwootAgentId, myHubspotOwnerId, ownerCache]);
 
   // Group conversations by normalized phone — one entry per contact in the sidebar
   const groupedConversations = useMemo(() => {
@@ -556,6 +574,21 @@ function AtendimentoPage() {
           last_message: c.last_non_activity_message ?? c.last_message ?? null,
         }));
         setConversations(normalized);
+        // Batch-load owner cache for all conversations in this tab
+        const phones = [...new Set(
+          normalized.map((c: any) => normalizePhone(c.meta?.sender?.phone_number)).filter(Boolean)
+        )] as string[];
+        if (phones.length) {
+          getContactOwnersBatch({ data: { phones } })
+            .then((rows) => {
+              setOwnerCache((prev) => {
+                const next = { ...prev };
+                for (const r of rows) next[r.phone] = r.hubspot_owner_id;
+                return next;
+              });
+            })
+            .catch(console.error);
+        }
         const convs2 = normalized;
         const pending = pendingConversationIdRef.current;
         if (pending) {
@@ -653,6 +686,10 @@ function AtendimentoPage() {
         .then((contact) => {
           setHubContact(contact);
           prevHubPropsRef.current = contact?.properties ?? {};
+          // Update owner cache for this phone so the sidebar filter stays accurate
+          const ownerId = contact?.properties?.hubspot_owner_id ?? null;
+          setOwnerCache((prev) => ({ ...prev, [phone]: ownerId }));
+          upsertContactOwnerCache({ data: { phone, hubspot_owner_id: ownerId } }).catch(console.error);
         })
         .catch(console.error)
         .finally(() => setHubLoading(false));
