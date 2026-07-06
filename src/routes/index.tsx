@@ -629,7 +629,10 @@ function AtendimentoPage() {
       if (q === "") return true;
       const name = (c.meta?.sender?.name ?? "").toLowerCase();
       const preview = (c.last_message?.content ?? "").toLowerCase();
-      return name.includes(q) || preview.includes(q);
+      const phone = (c._phone ?? c.meta?.sender?.phone_number ?? "").replace(/\D/g, "");
+      const qDigits = q.replace(/\D/g, "");
+      const phoneMatch = qDigits.length >= 4 && phone.includes(qDigits);
+      return name.includes(q) || preview.includes(q) || phoneMatch;
     });
   }, [groupedConversations, search]);
 
