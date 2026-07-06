@@ -748,8 +748,8 @@ function AtendimentoPage() {
         : undefined;
       const contentAttrs = m.content_attributes ?? {};
       return {
-        id: m.id ?? m.chatwoot_message_id,
-        chatwootMessageId: (m.id ?? m.chatwoot_message_id) as number,
+        id: (m.chatwoot_message_id ?? m.id) as number,
+        chatwootMessageId: (m.chatwoot_message_id ?? m.id) as number,
         conversationId: (m.conversation_id ?? sourceConvId) as number,
         from: m.message_type === 1 ? ("agent" as const) : ("contact" as const),
         text: (m.content as string) || null,
