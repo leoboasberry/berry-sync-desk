@@ -173,17 +173,49 @@ export const getHubSpotContactByPhone = createServerFn({ method: "POST" })
 
     // 1st try: full-text query with local number (DDD + digits) — most robust
     const r1 = await search({ query: localPhone });
-    if (r1) return r1;
+    const contact = r1 ?? await (async () => {
+      // 2nd try: CONTAINS_TOKEN on phone + mobilephone (OR) with last 9 digits
+      const token9 = allDigits.slice(-9);
+      return search({
+        filterGroups: [
+          { filters: [{ propertyName: "phone", operator: "CONTAINS_TOKEN", value: token9 }] },
+          { filters: [{ propertyName: "mobilephone", operator: "CONTAINS_TOKEN", value: token9 }] },
+        ],
+      });
+    })();
 
-    // 2nd try: CONTAINS_TOKEN on phone + mobilephone (OR) with last 9 digits
-    const token9 = allDigits.slice(-9);
-    const r2 = await search({
-      filterGroups: [
-        { filters: [{ propertyName: "phone", operator: "CONTAINS_TOKEN", value: token9 }] },
-        { filters: [{ propertyName: "mobilephone", operator: "CONTAINS_TOKEN", value: token9 }] },
-      ],
-    });
-    return r2;
+    if (!contact) return null;
+
+    // Merge Lead properties — Lead object owns fields like pre_sales_owner, hubspot_owner_id
+    try {
+      const assocRes = await fetch(
+        `https://api.hubapi.com/crm/v4/objects/contacts/${contact.id}/associations/leads`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (assocRes.ok) {
+        const assocJson = await assocRes.json();
+        const leadId = assocJson?.results?.[0]?.toObjectId;
+        if (leadId) {
+          const leadRes = await fetch(
+            `https://api.hubapi.com/crm/v3/objects/leads/${leadId}?properties=${properties.join(",")}`,
+            { headers: { Authorization: `Bearer ${token}` } }
+          );
+          if (leadRes.ok) {
+            const leadJson = await leadRes.json();
+            // Lead properties override contact properties for matching keys
+            const leadProps = leadJson.properties ?? {};
+            contact.properties = { ...contact.properties };
+            for (const key of Object.keys(leadProps)) {
+              if (leadProps[key] != null) contact.properties[key] = leadProps[key];
+            }
+          }
+        }
+      }
+    } catch {
+      // Lead merge is best-effort — don't fail the whole request
+    }
+
+    return contact;
   });
 
 export const getHubSpotVisibleFields = createServerFn({ method: "POST" })
