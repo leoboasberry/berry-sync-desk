@@ -41,27 +41,33 @@ export type Database = {
     Tables: {
       agents: {
         Row: {
+          chatwoot_token: string | null
           created_at: string
           email: string
           hubspot_email: string | null
+          hubspot_owner_id: string | null
           id: string
           name: string
           role: string
           status: string
         }
         Insert: {
+          chatwoot_token?: string | null
           created_at?: string
           email?: string
           hubspot_email?: string | null
+          hubspot_owner_id?: string | null
           id: string
           name?: string
           role?: string
           status?: string
         }
         Update: {
+          chatwoot_token?: string | null
           created_at?: string
           email?: string
           hubspot_email?: string | null
+          hubspot_owner_id?: string | null
           id?: string
           name?: string
           role?: string
@@ -122,21 +128,45 @@ export type Database = {
       chatwoot_events: {
         Row: {
           account_id: number | null
+          conversation_id: number | null
           created_at: string | null
           event_type: string
           id: number
+          message_type: string | null
         }
         Insert: {
           account_id?: number | null
+          conversation_id?: number | null
           created_at?: string | null
           event_type: string
           id?: number
+          message_type?: string | null
         }
         Update: {
           account_id?: number | null
+          conversation_id?: number | null
           created_at?: string | null
           event_type?: string
           id?: number
+          message_type?: string | null
+        }
+        Relationships: []
+      }
+      contact_owner_cache: {
+        Row: {
+          hubspot_owner_id: string | null
+          phone: string
+          updated_at: string
+        }
+        Insert: {
+          hubspot_owner_id?: string | null
+          phone: string
+          updated_at?: string
+        }
+        Update: {
+          hubspot_owner_id?: string | null
+          phone?: string
+          updated_at?: string
         }
         Relationships: []
       }
@@ -158,6 +188,54 @@ export type Database = {
           contact_data?: Json | null
           deal_data?: Json | null
           phone?: string
+        }
+        Relationships: []
+      }
+      messages_history: {
+        Row: {
+          attachments: Json | null
+          chatwoot_message_id: number
+          contact_phone: string
+          content: string | null
+          content_attributes: Json | null
+          conversation_id: number
+          created_at_chatwoot: string
+          id: number
+          message_type: number
+          sender_name: string | null
+          sender_type: string | null
+          status: string | null
+          synced_at: string
+        }
+        Insert: {
+          attachments?: Json | null
+          chatwoot_message_id: number
+          contact_phone: string
+          content?: string | null
+          content_attributes?: Json | null
+          conversation_id: number
+          created_at_chatwoot: string
+          id?: number
+          message_type: number
+          sender_name?: string | null
+          sender_type?: string | null
+          status?: string | null
+          synced_at?: string
+        }
+        Update: {
+          attachments?: Json | null
+          chatwoot_message_id?: number
+          contact_phone?: string
+          content?: string | null
+          content_attributes?: Json | null
+          conversation_id?: number
+          created_at_chatwoot?: string
+          id?: number
+          message_type?: number
+          sender_name?: string | null
+          sender_type?: string | null
+          status?: string | null
+          synced_at?: string
         }
         Relationships: []
       }

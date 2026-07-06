@@ -315,6 +315,72 @@ export const getContactOwnersBatch = createServerFn({ method: "POST" })
     return (rows ?? []) as Array<{ phone: string; hubspot_owner_id: string | null }>;
   });
 
+// Fetch HubSpot lead owner for each phone and upsert into cache
+// Used to pre-populate the cache on app load for phones not yet cached
+export const preloadContactOwnerCache = createServerFn({ method: "POST" })
+  .inputValidator((data: { phones: string[] }) => data)
+  .handler(async ({ data }) => {
+    if (!data.phones.length) return [] as Array<{ phone: string; hubspot_owner_id: string | null }>;
+    const token = await getHsToken();
+    const results: Array<{ phone: string; hubspot_owner_id: string | null }> = [];
+
+    const lookup = async (phone: string): Promise<{ phone: string; hubspot_owner_id: string | null }> => {
+      try {
+        const allDigits = phone.replace(/\D/g, "");
+        const localPhone = allDigits.startsWith("55") && allDigits.length > 10
+          ? allDigits.slice(2) : allDigits;
+        if (!localPhone) return { phone, hubspot_owner_id: null };
+
+        const searchRes = await fetch("https://api.hubapi.com/crm/v3/objects/contacts/search", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ query: localPhone, properties: ["phone"], limit: 1 }),
+        });
+        if (!searchRes.ok) return { phone, hubspot_owner_id: null };
+        const searchJson = await searchRes.json();
+        const contact = searchJson.results?.[0];
+        if (!contact) return { phone, hubspot_owner_id: null };
+
+        const assocRes = await fetch(
+          `https://api.hubapi.com/crm/v4/objects/contacts/${contact.id}/associations/leads`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        if (!assocRes.ok) return { phone, hubspot_owner_id: null };
+        const assocJson = await assocRes.json();
+        const leadId = assocJson?.results?.[0]?.toObjectId;
+        if (!leadId) return { phone, hubspot_owner_id: null };
+
+        const leadRes = await fetch(
+          `https://api.hubapi.com/crm/v3/objects/leads/${leadId}?properties=hubspot_owner_id`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        if (!leadRes.ok) return { phone, hubspot_owner_id: null };
+        const leadJson = await leadRes.json();
+        return { phone, hubspot_owner_id: leadJson.properties?.hubspot_owner_id ?? null };
+      } catch {
+        return { phone, hubspot_owner_id: null };
+      }
+    };
+
+    // Process 5 phones at a time to avoid HubSpot rate limits
+    const CONCURRENCY = 5;
+    for (let i = 0; i < data.phones.length; i += CONCURRENCY) {
+      const batch = data.phones.slice(i, i + CONCURRENCY);
+      const settled = await Promise.allSettled(batch.map(lookup));
+      for (const r of settled) {
+        if (r.status === "fulfilled") results.push(r.value);
+      }
+    }
+
+    if (results.length) {
+      await (supabaseAdmin as any).from("contact_owner_cache").upsert(
+        results.map((r) => ({ phone: r.phone, hubspot_owner_id: r.hubspot_owner_id, updated_at: new Date().toISOString() })),
+        { onConflict: "phone" }
+      );
+    }
+    return results;
+  });
+
 export const debugHubSpotContact = createServerFn({ method: "POST" })
   .inputValidator((data: { contactId: string; properties: string[] }) => data)
   .handler(async ({ data }) => {

@@ -33,6 +33,7 @@ import {
   getHubSpotOwners,
   upsertContactOwnerCache,
   getContactOwnersBatch,
+  preloadContactOwnerCache,
   DEFAULT_HS_FIELDS,
   type HsField,
 } from "@/lib/hubspot.functions";
@@ -581,11 +582,25 @@ function AtendimentoPage() {
         if (phones.length) {
           getContactOwnersBatch({ data: { phones } })
             .then((rows) => {
+              const cached = new Set(rows.map((r) => r.phone));
               setOwnerCache((prev) => {
                 const next = { ...prev };
                 for (const r of rows) next[r.phone] = r.hubspot_owner_id;
                 return next;
               });
+              // Fetch from HubSpot for phones not yet in cache
+              const uncached = phones.filter((p) => !cached.has(p));
+              if (uncached.length) {
+                preloadContactOwnerCache({ data: { phones: uncached } })
+                  .then((results) => {
+                    setOwnerCache((prev) => {
+                      const next = { ...prev };
+                      for (const r of results) next[r.phone] = r.hubspot_owner_id;
+                      return next;
+                    });
+                  })
+                  .catch(console.error);
+              }
             })
             .catch(console.error);
         }
