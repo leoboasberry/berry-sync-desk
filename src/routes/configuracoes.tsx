@@ -538,7 +538,7 @@ function FieldsTab() {
   );
 }
 
-type Agent = { id: string; name: string; email: string; status: string; role: string };
+type Agent = { id: string; name: string; email: string; status: string; role: string; chatwoot_token?: string };
 
 const STATUS_COLOR: Record<string, string> = {
   online: "#00e186",
@@ -565,7 +565,7 @@ function AgentsTab() {
     setMyId(u.user?.id ?? "");
     const { data } = await supabase
       .from("agents")
-      .select("id, name, email, status, role")
+      .select("id, name, email, status, role, chatwoot_token")
       .order("created_at", { ascending: true });
     setAgents(((data ?? []) as any[]).map((a) => ({ ...a, role: a.role ?? "agent" })));
     setLoading(false);
@@ -716,9 +716,10 @@ function AgentsTab() {
           confirmLabel="Salvar"
           initial={editTarget}
           emailReadOnly
+          showChatwootToken
           onClose={() => setEditTarget(null)}
-          onConfirm={async ({ name, role }) => {
-            await updateAgent({ data: { id: editTarget.id, name, role } });
+          onConfirm={async ({ name, role, chatwoot_token }) => {
+            await updateAgent({ data: { id: editTarget.id, name, role, chatwoot_token } });
             toast.success("Agente atualizado");
             load();
           }}
@@ -841,6 +842,7 @@ function AgentModal({
   confirmLabel,
   initial,
   emailReadOnly = false,
+  showChatwootToken = false,
   onClose,
   onConfirm,
 }: {
@@ -848,12 +850,15 @@ function AgentModal({
   confirmLabel: string;
   initial?: Agent;
   emailReadOnly?: boolean;
+  showChatwootToken?: boolean;
   onClose: () => void;
-  onConfirm: (data: { name: string; email: string; role: "admin" | "agent" }) => Promise<{ tempPassword: string } | void>;
+  onConfirm: (data: { name: string; email: string; role: "admin" | "agent"; chatwoot_token?: string }) => Promise<{ tempPassword: string } | void>;
 }) {
   const [name, setName] = useState(initial?.name ?? "");
   const [email, setEmail] = useState(initial?.email ?? "");
   const [role, setRole] = useState<"admin" | "agent">((initial?.role as any) ?? "agent");
+  const [chatwootToken, setChatwootToken] = useState(initial?.chatwoot_token ?? "");
+  const [showToken, setShowToken] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState<{ tempPassword: string } | null>(null);
@@ -865,7 +870,7 @@ function AgentModal({
     setLoading(true);
     setError("");
     try {
-      const result = await onConfirm({ name: name.trim(), email: email.trim(), role });
+      const result = await onConfirm({ name: name.trim(), email: email.trim(), role, ...(showChatwootToken ? { chatwoot_token: chatwootToken.trim() } : {}) });
       if (result?.tempPassword) {
         setDone(result);
       } else {
@@ -958,6 +963,30 @@ function AgentModal({
               <option value="admin">Admin — gerencia agentes e configurações</option>
             </select>
           </div>
+          {showChatwootToken && (
+            <div className="space-y-1.5">
+              <Label className="label-uppercase">Token Chatwoot (pessoal)</Label>
+              <div className="relative">
+                <Input
+                  value={chatwootToken}
+                  onChange={(e) => setChatwootToken(e.target.value)}
+                  placeholder="Access token do agente no Chatwoot"
+                  type={showToken ? "text" : "password"}
+                  className="pr-10 font-mono text-xs"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowToken((v) => !v)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-[11px] text-[#666] dark:text-[#909090] hover:text-[#090909] dark:hover:text-[#e8e8e8]"
+                >
+                  {showToken ? "ocultar" : "mostrar"}
+                </button>
+              </div>
+              <p className="text-[11px] text-[#999] dark:text-[#686868]">
+                Encontre em: Chatwoot → Perfil → Token de acesso. Usado para enviar mensagens como este agente.
+              </p>
+            </div>
+          )}
         </div>
         {error && <p className="mt-3 text-xs text-red-600">{error}</p>}
         <div className="mt-6 flex justify-end gap-2">

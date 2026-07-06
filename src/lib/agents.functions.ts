@@ -47,11 +47,15 @@ export const resetAgentPassword = createServerFn({ method: "POST" })
   });
 
 export const updateAgent = createServerFn({ method: "POST" })
-  .inputValidator((data: { id: string; name: string; role: "admin" | "agent" }) => data)
+  .inputValidator((data: { id: string; name: string; role: "admin" | "agent"; chatwoot_token?: string }) => data)
   .handler(async ({ data }) => {
     const { error } = await supabaseAdmin
       .from("agents")
-      .update({ name: data.name, role: data.role })
+      .update({
+        name: data.name,
+        role: data.role,
+        ...(data.chatwoot_token !== undefined ? { chatwoot_token: data.chatwoot_token || null } : {}),
+      } as any)
       .eq("id", data.id);
     if (error) throw new Error(error.message);
   });
