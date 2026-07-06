@@ -357,10 +357,29 @@ function AtendimentoPage() {
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "chatwoot_events" },
         (event) => {
-          const isMessageCreated = (event.new as any)?.event_type === "message_created";
+          const ev = event.new as any;
+          const isMessageCreated = ev?.event_type === "message_created";
+          const isIncoming = isMessageCreated && ev?.message_type === "incoming";
+          const evConvId: number | null = ev?.conversation_id ?? null;
+
+          // Optimistic local update: bump unread + last_activity_at for non-active incoming messages
+          if (isIncoming && evConvId && evConvId !== activeIdRef.current) {
+            setConversations((prev) =>
+              prev
+                .map((c) =>
+                  c.id === evConvId
+                    ? { ...c, unread_count: (c.unread_count ?? 0) + 1, last_activity_at: Math.floor(Date.now() / 1000) }
+                    : c
+                )
+                .sort((a, b) => (b.last_activity_at ?? 0) - (a.last_activity_at ?? 0))
+            );
+          }
 
           getChatwootConversations({ data: { status: tabRef.current } })
-            .then(setConversations)
+            .then((convs) => setConversations(convs.map((c: any) => ({
+              ...c,
+              last_message: c.last_non_activity_message ?? c.last_message ?? null,
+            }))))
             .catch(console.error);
 
           if (activeIdRef.current) {
@@ -474,10 +493,15 @@ function AtendimentoPage() {
     setMessages([]);
     getChatwootConversations({ data: { status: tab } })
       .then((convs) => {
-        setConversations(convs);
+        const normalized = convs.map((c: any) => ({
+          ...c,
+          last_message: c.last_non_activity_message ?? c.last_message ?? null,
+        }));
+        setConversations(normalized);
+        const convs2 = normalized;
         const pending = pendingConversationIdRef.current;
         if (pending) {
-          const found = convs.find((c: any) => c.id === pending);
+          const found = convs2.find((c: any) => c.id === pending);
           if (found) {
             setActiveId(pending);
             setActivePhone(normalizePhone(found.meta?.sender?.phone_number));
@@ -500,9 +524,9 @@ function AtendimentoPage() {
               })
               .catch(console.error);
           }
-        } else if (convs.length > 0) {
-          setActiveId(convs[0].id);
-          setActivePhone(normalizePhone(convs[0]?.meta?.sender?.phone_number));
+        } else if (convs2.length > 0) {
+          setActiveId(convs2[0].id);
+          setActivePhone(normalizePhone(convs2[0]?.meta?.sender?.phone_number));
         }
       })
       .catch(console.error)
@@ -565,7 +589,14 @@ function AtendimentoPage() {
       setHubLoading(false);
     }
 
-    return () => clearInterval(poll);
+    // HubSpot refresh every 5 minutes while conversation is open
+    const hubPoll = phone ? setInterval(() => {
+      getHubSpotContactByPhone({ data: { phone, properties: visibleFields.map((f) => f.name) } })
+        .then(setHubContact)
+        .catch(console.error);
+    }, 5 * 60_000) : null;
+
+    return () => { clearInterval(poll); if (hubPoll) clearInterval(hubPoll); };
   }, [activeId]);
 
   const visible = useMemo(() => {

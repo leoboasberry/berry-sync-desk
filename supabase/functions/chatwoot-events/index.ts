@@ -19,6 +19,8 @@ Deno.serve(async (req) => {
     await supabase.from("chatwoot_events").insert({
       event_type: payload.event ?? "unknown",
       account_id: payload.account_id ?? null,
+      conversation_id: payload.conversation?.id ?? null,
+      message_type: payload.message_type ?? null,
     });
 
     // Auto-assign: when an outgoing message is created in an unassigned conversation
