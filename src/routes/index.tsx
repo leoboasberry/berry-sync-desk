@@ -1491,6 +1491,25 @@ function AtendimentoPage() {
             hubLoading={hubLoading}
             hubChangedFields={hubChangedFields}
             visibleFields={visibleFields}
+            onHubRefresh={async () => {
+              const phone = activePhone ?? normalizePhone(active?.meta?.sender?.phone_number);
+              if (!phone) return;
+              setHubLoading(true);
+              try {
+                const contact = await getHubSpotContactByPhone({ data: { phone, properties: visibleFields.map((f) => f.name) } });
+                const prev = prevHubPropsRef.current;
+                const next = contact?.properties ?? {};
+                const changed = new Set<string>();
+                for (const key of Object.keys(next)) {
+                  if (prev[key] !== undefined && String(prev[key]) !== String(next[key] ?? "")) changed.add(key);
+                }
+                if (changed.size > 0) setHubChangedFields(changed);
+                prevHubPropsRef.current = next;
+                setHubContact(contact);
+              } finally {
+                setHubLoading(false);
+              }
+            }}
             onConvUpdate={async () => {
               const updated = await getChatwootConversations({ data: { status: tab } });
               setConversations(updated);
@@ -1820,7 +1839,7 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 function LeadPanel({
-  conv, messages, hubContact, hubLoading, hubChangedFields, visibleFields, onConvUpdate,
+  conv, messages, hubContact, hubLoading, hubChangedFields, visibleFields, onHubRefresh, onConvUpdate,
 }: {
   conv: any;
   messages: any[];
@@ -1828,6 +1847,7 @@ function LeadPanel({
   hubLoading: boolean;
   hubChangedFields: Set<string>;
   visibleFields: HsField[];
+  onHubRefresh: () => Promise<void>;
   onConvUpdate: () => Promise<void>;
 }) {
   const name = conv.meta?.sender?.name ?? "Desconhecido";
@@ -1970,7 +1990,17 @@ function LeadPanel({
         </div>
       ) : hubContact ? (
         <div className="rounded-[10px] border border-[#e5e5e5] dark:border-[#2a2a2a] bg-white dark:bg-[#1a1a1a] p-4">
-          <div className="label-uppercase mb-3">HubSpot CRM</div>
+          <div className="mb-3 flex items-center justify-between">
+            <span className="label-uppercase">HubSpot CRM</span>
+            <button
+              onClick={onHubRefresh}
+              disabled={hubLoading}
+              title="Atualizar dados do HubSpot"
+              className="text-[#999] hover:text-[#090909] dark:hover:text-[#e8e8e8] transition-colors disabled:opacity-40"
+            >
+              <RotateCcw className={cn("h-3.5 w-3.5", hubLoading && "animate-spin")} />
+            </button>
+          </div>
           <div className="space-y-2.5 text-sm">
             {visibleFields.map((f) => {
               const value = hubContact.properties?.[f.name];
