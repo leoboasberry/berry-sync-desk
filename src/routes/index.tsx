@@ -510,6 +510,13 @@ function AtendimentoPage() {
   }, [tab]);
 
   useEffect(() => {
+    // Clear draft and template state when switching conversations
+    setDraft("");
+    setDraftIsTemplate(false);
+    setSelectedTemplate(null);
+    setTemplateVars([]);
+    setShowTemplatePicker(false);
+
     if (!activeId) { setMessages([]); setHistoryMessages([]); setHubContact(null); return; }
 
     const phone = activePhone ?? normalizePhone(conversations.find((c) => c.id === activeId)?.meta?.sender?.phone_number);
@@ -1279,16 +1286,14 @@ function AtendimentoPage() {
                             <ChevronLeft className="h-3.5 w-3.5" />
                             {selectedTemplate.name}
                           </button>
-                          <div className="mb-4 whitespace-pre-wrap rounded-lg bg-[#f8f8f8] dark:bg-[#1e1e1e] p-3 text-xs text-[#090909] dark:text-[#e8e8e8]">
-                            {getTplBody(selectedTemplate)}
-                          </div>
-                          <div className="space-y-3">
+                          <div className="space-y-3 mb-4">
                             {templateVars.map((v, i) => (
                               <div key={i} className="space-y-1">
                                 <label className="text-[11px] font-semibold uppercase tracking-wider text-[#666] dark:text-[#909090]">
                                   Variável {i + 1}
                                 </label>
                                 <input
+                                  autoFocus={i === 0}
                                   value={v}
                                   onChange={(e) => {
                                     const next = [...templateVars];
@@ -1301,7 +1306,20 @@ function AtendimentoPage() {
                               </div>
                             ))}
                           </div>
-                          <div className="mt-4 flex justify-end gap-2">
+                          {/* Live preview */}
+                          <div className="mb-4">
+                            <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-[#666] dark:text-[#909090]">Prévia</div>
+                            <div className="whitespace-pre-wrap rounded-lg bg-[#f0faf5] dark:bg-[#0d2018] border border-[#00e186]/30 p-3 text-xs text-[#090909] dark:text-[#e8e8e8]">
+                              {(() => {
+                                let body = getTplBody(selectedTemplate);
+                                templateVars.forEach((v, i) => {
+                                  body = body.replaceAll(`{{${i + 1}}}`, v || `{{${i + 1}}}`);
+                                });
+                                return body;
+                              })()}
+                            </div>
+                          </div>
+                          <div className="flex justify-end gap-2">
                             <button
                               onClick={() => setSelectedTemplate(null)}
                               className="rounded-md border border-[#e5e5e5] dark:border-[#2a2a2a] px-3 py-1.5 text-xs hover:bg-[#f0f0f0] dark:hover:bg-[#252525]"
