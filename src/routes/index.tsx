@@ -13,6 +13,7 @@ import {
   backfillContactHistory,
   deleteHistoryMessage,
   sendChatwootMessage,
+  sendChatwootTemplate,
   sendChatwootAttachment,
   updateChatwootConversationStatus,
   getChatwootTemplates,
@@ -327,6 +328,7 @@ function AtendimentoPage() {
   const [templateSearch, setTemplateSearch] = useState("");
   const [selectedTemplate, setSelectedTemplate] = useState<any | null>(null);
   const [draftIsTemplate, setDraftIsTemplate] = useState(false);
+  const [draftTemplateInfo, setDraftTemplateInfo] = useState<{ tpl: any; params: string[] } | null>(null);
   const [templateVars, setTemplateVars] = useState<string[]>([]);
 
   // New conversation modal
@@ -941,11 +943,23 @@ function AtendimentoPage() {
           },
         });
         setAttachFile(null);
+      } else if (draftIsTemplate && draftTemplateInfo) {
+        await sendChatwootTemplate({
+          data: {
+            conversationId: activeId,
+            templateName: draftTemplateInfo.tpl.name,
+            language: draftTemplateInfo.tpl.language ?? "pt_BR",
+            category: draftTemplateInfo.tpl.category ?? "MARKETING",
+            templateBody: content,
+            templateParams: draftTemplateInfo.params,
+          },
+        });
       } else {
         await sendChatwootMessage({ data: { conversationId: activeId, content } });
       }
       setDraft("");
       setDraftIsTemplate(false);
+      setDraftTemplateInfo(null);
       // Auto-assign to sender if conversation has no assignee
       const currentConv = conversations.find((c) => c.id === activeId);
       if (myChatwootAgentId && !currentConv?.meta?.assignee?.id) {
@@ -1068,6 +1082,7 @@ function AtendimentoPage() {
     vars.forEach((v, i) => { body = body.replaceAll(`{{${i + 1}}}`, v); });
     setDraft(body);
     setDraftIsTemplate(true);
+    setDraftTemplateInfo({ tpl, params: vars });
     setShowTemplatePicker(false);
     setSelectedTemplate(null);
     setTemplateVars([]);
@@ -1643,14 +1658,14 @@ function AtendimentoPage() {
                   onChange={(e) => { setDraft(e.target.value); setDraftIsTemplate(false); }}
                   onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
                   placeholder={active?.can_reply === false && active?.status === "open" ? "Use um template para responder…" : "Digite uma mensagem…"}
-                  disabled={active?.can_reply === false && active?.status === "open"}
+                  disabled={!draftIsTemplate && active?.can_reply === false && active?.status === "open"}
                   className="h-11 flex-1"
                 />
                 <Button
                   size="icon"
                   className="h-11 w-11 shrink-0 bg-[#090909] text-white hover:bg-[#090909]/90"
                   onClick={handleSend}
-                  disabled={sending || (!draft.trim() && !attachFile) || (active?.can_reply === false && active?.status === "open")}
+                  disabled={sending || (!draft.trim() && !attachFile) || (!draftIsTemplate && active?.can_reply === false && active?.status === "open")}
                 >
                   {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                 </Button>

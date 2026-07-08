@@ -271,6 +271,43 @@ export const sendChatwootMessage = createServerFn({ method: "POST" })
     return await res.json();
   });
 
+export const sendChatwootTemplate = createServerFn({ method: "POST" })
+  .inputValidator((data: {
+    conversationId: number;
+    templateName: string;
+    language: string;
+    category: string;
+    templateBody: string;
+    templateParams: string[];
+  }) => data)
+  .handler(async ({ data }) => {
+    const s = await getChatwootSettings();
+    const res = await fetch(
+      `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/conversations/${data.conversationId}/messages`,
+      {
+        method: "POST",
+        headers: { api_access_token: s.chatwoot_token!, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          content: data.templateBody,
+          message_type: "outgoing",
+          template_params: {
+            name: data.templateName,
+            category: data.category,
+            language: data.language,
+            processed_params: Object.fromEntries(
+              data.templateParams.map((v, i) => [String(i + 1), v])
+            ),
+          },
+        }),
+      }
+    );
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => "");
+      throw new Error(`Chatwoot template error: ${res.status} — ${errBody.slice(0, 300)}`);
+    }
+    return await res.json();
+  });
+
 export const retryChatwootMessage = createServerFn({ method: "POST" })
   .inputValidator((data: { conversationId: number; messageId: number }) => data)
   .handler(async ({ data }) => {
