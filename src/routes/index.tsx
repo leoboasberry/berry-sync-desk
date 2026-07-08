@@ -591,21 +591,27 @@ function AtendimentoPage() {
               });
               // Cache is ready — filter can now apply correctly
               setOwnerCacheReady(true);
-              // Fetch owner from HubSpot for phones not yet in cache — one at a time (proven path)
+              // Fetch owner from HubSpot for phones not yet in cache — collect all, update once
               const uncached = phones.filter((p) => !cached.has(p));
               if (uncached.length) {
                 const runPreload = async () => {
+                  const collected: Record<string, string | null> = {};
                   for (const phone of uncached) {
                     try {
                       const contact = await getHubSpotContactByPhone({
                         data: { phone, properties: ["hubspot_owner_id"] },
                       });
-                      const ownerId = contact?.properties?.hubspot_owner_id ?? null;
-                      setOwnerCache((prev) => ({ ...prev, [phone]: ownerId }));
-                      upsertContactOwnerCache({ data: { phone, hubspot_owner_id: ownerId } }).catch(console.error);
+                      collected[phone] = contact?.properties?.hubspot_owner_id ?? null;
                     } catch (e) {
                       console.error("owner preload error", phone, e);
+                      collected[phone] = null;
                     }
+                  }
+                  // Single state update to avoid cascade of re-renders
+                  setOwnerCache((prev) => ({ ...prev, ...collected }));
+                  // Persist to Supabase in batch via individual upserts (fire-and-forget)
+                  for (const [phone, ownerId] of Object.entries(collected)) {
+                    upsertContactOwnerCache({ data: { phone, hubspot_owner_id: ownerId } }).catch(console.error);
                   }
                 };
                 runPreload();
