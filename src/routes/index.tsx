@@ -445,6 +445,26 @@ function AtendimentoPage() {
     return () => { supabase.removeChannel(channel); };
   }, []);
 
+  // Fallback polling for sidebar — refreshes conversations list every 8s
+  // Ensures sidebar stays in sync even when realtime events are delayed/missed
+  useEffect(() => {
+    const sidebarPoll = setInterval(() => {
+      getChatwootConversations({ data: { status: tabRef.current } })
+        .then((convs) => {
+          const normalized = convs.map((c: any) => ({
+            ...c,
+            last_message: c.last_non_activity_message ?? c.last_message ?? null,
+          }));
+          setConversations(normalized);
+          try {
+            localStorage.setItem(`berry_convs_${tabRef.current}`, JSON.stringify({ convs: normalized, ts: Date.now() }));
+          } catch {}
+        })
+        .catch(() => {});
+    }, 8_000);
+    return () => clearInterval(sidebarPoll);
+  }, []);
+
   useEffect(() => {
     (async () => {
       const { data: u } = await supabase.auth.getUser();
