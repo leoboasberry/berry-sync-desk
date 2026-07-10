@@ -485,25 +485,28 @@ function AtendimentoPage() {
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
-  // When search is active, load conversations from all statuses
+  // When search is active, load conversations from all statuses — debounced 400ms
   useEffect(() => {
     if (!search.trim()) { setSearchAllConvs([]); return; }
     setSearchLoading(true);
-    Promise.all([
-      getChatwootConversations({ data: { status: "open" } }),
-      getChatwootConversations({ data: { status: "pending" } }),
-      getChatwootConversations({ data: { status: "resolved" } }),
-    ])
-      .then(([open, pending, resolved]) => {
-        const byId = new Map<number, any>();
-        for (const c of [...open, ...pending, ...resolved]) {
-          const normalized = { ...c, last_message: c.last_non_activity_message ?? c.last_message ?? null };
-          byId.set(c.id, normalized);
-        }
-        setSearchAllConvs(Array.from(byId.values()));
-      })
-      .catch(console.error)
-      .finally(() => setSearchLoading(false));
+    const timer = setTimeout(() => {
+      Promise.all([
+        getChatwootConversations({ data: { status: "open" } }),
+        getChatwootConversations({ data: { status: "pending" } }),
+        getChatwootConversations({ data: { status: "resolved" } }),
+      ])
+        .then(([open, pending, resolved]) => {
+          const byId = new Map<number, any>();
+          for (const c of [...open, ...pending, ...resolved]) {
+            const normalized = { ...c, last_message: c.last_non_activity_message ?? c.last_message ?? null };
+            byId.set(c.id, normalized);
+          }
+          setSearchAllConvs(Array.from(byId.values()));
+        })
+        .catch(console.error)
+        .finally(() => setSearchLoading(false));
+    }, 400);
+    return () => clearTimeout(timer);
   }, [search]);
 
   const displayedConversations = useMemo(() => {
@@ -701,7 +704,7 @@ function AtendimentoPage() {
       .catch(console.error)
       .finally(() => setLoadingMsgs(false));
 
-    // Poll every 15s to pick up delivery status updates from WhatsApp webhooks
+    // Poll every 5s to pick up delivery status updates from WhatsApp webhooks
     const poll = setInterval(() => {
       getChatwootMessages({ data: { conversationId: activeId, contactPhone: phone || undefined } })
         .then((result) => {
@@ -709,7 +712,7 @@ function AtendimentoPage() {
           if (phone) getContactHistory({ data: { contactPhone: phone } }).then(setHistoryMessages).catch(() => {});
         })
         .catch(() => {});
-    }, 15_000);
+    }, 5_000);
 
     setHubContact(null);
     setHubChangedFields(new Set());
