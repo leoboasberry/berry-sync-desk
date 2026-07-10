@@ -391,19 +391,29 @@ function AtendimentoPage() {
             });
           }
 
-          // Optimistic local update: bump unread + last_activity_at for non-active incoming messages
-          if (isIncoming && evConvId && evConvId !== activeIdRef.current) {
-            setConversations((prev) =>
-              prev
-                .map((c) =>
-                  c.id === evConvId
-                    ? { ...c, unread_count: (c.unread_count ?? 0) + 1, last_activity_at: Math.floor(Date.now() / 1000) }
-                    : c
-                )
-                .sort((a, b) => (b.last_activity_at ?? 0) - (a.last_activity_at ?? 0))
-            );
+          // Optimistic update: update sidebar instantly from event data (no API round-trip)
+          if (isMessageCreated && evConvId) {
+            const now = Math.floor(Date.now() / 1000);
+            const optimisticLastMsg = ev.content
+              ? { content: ev.content, message_type: ev.message_type === "incoming" ? 0 : 1, created_at: now }
+              : undefined;
+            setConversations((prev) => {
+              const updated = prev.map((c) => {
+                if (c.id !== evConvId) return c;
+                return {
+                  ...c,
+                  last_activity_at: now,
+                  unread_count: isIncoming && evConvId !== activeIdRef.current
+                    ? (c.unread_count ?? 0) + 1
+                    : c.unread_count,
+                  ...(optimisticLastMsg ? { last_message: optimisticLastMsg } : {}),
+                };
+              });
+              return updated.sort((a, b) => (b.last_activity_at ?? 0) - (a.last_activity_at ?? 0));
+            });
           }
 
+          // Background refresh to sync any fields not in the event payload
           getChatwootConversations({ data: { status: tabRef.current } })
             .then((convs) => setConversations(convs.map((c: any) => ({
               ...c,
