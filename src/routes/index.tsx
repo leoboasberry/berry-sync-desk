@@ -1632,7 +1632,8 @@ function AtendimentoPage() {
                             </button>
                             <button
                               onClick={() => applyTemplate(selectedTemplate, templateVars)}
-                              className="rounded-md bg-[#090909] px-3 py-1.5 text-xs text-white hover:bg-[#090909]/90"
+                              disabled={templateVars.some((v) => !v.trim())}
+                              className="rounded-md bg-[#090909] px-3 py-1.5 text-xs text-white hover:bg-[#090909]/90 disabled:opacity-40 disabled:cursor-not-allowed"
                             >
                               Usar template
                             </button>
