@@ -568,8 +568,20 @@ function AtendimentoPage() {
   }, [displayedConversations]);
 
   useEffect(() => {
+    const cacheKey = `berry_convs_${tab}`;
+    // Show cached conversations immediately to avoid blank sidebar on load
+    try {
+      const cached = localStorage.getItem(cacheKey);
+      if (cached) {
+        const { convs: cachedConvs, ts } = JSON.parse(cached);
+        if (Date.now() - ts < 5 * 60_000 && Array.isArray(cachedConvs)) {
+          setConversations(cachedConvs);
+          setOwnerCacheReady(true); // cached data is good enough to show immediately
+        }
+      }
+    } catch {}
+
     setLoadingConvs(true);
-    setConversations([]);
     setActiveId(null);
     setActivePhone(null);
     setMessages([]);
@@ -581,6 +593,8 @@ function AtendimentoPage() {
           last_message: c.last_non_activity_message ?? c.last_message ?? null,
         }));
         setConversations(normalized);
+        // Persist fresh conversations to localStorage
+        try { localStorage.setItem(cacheKey, JSON.stringify({ convs: normalized, ts: Date.now() })); } catch {}
         // Batch-load owner cache for all conversations in this tab
         const phones = [...new Set(
           normalized.map((c: any) => normalizePhone(c.meta?.sender?.phone_number)).filter(Boolean)
