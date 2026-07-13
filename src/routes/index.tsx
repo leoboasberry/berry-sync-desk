@@ -444,6 +444,19 @@ function AtendimentoPage() {
               .catch(console.error);
           }, 2_000);
 
+          // DEBUG — remove after confirming
+          console.log("[NOTIF DEBUG]", {
+            event_type: ev?.event_type,
+            message_type: ev?.message_type,
+            conversation_id: ev?.conversation_id,
+            content: ev?.content,
+            isMessageCreated,
+            isIncoming,
+            evConvId,
+            activeId: activeIdRef.current,
+            wouldNotify: isMessageCreated && isIncoming && evConvId !== activeIdRef.current,
+          });
+
           // Notify for incoming messages in non-active conversations — always, regardless of focus
           if (isMessageCreated && isIncoming && evConvId !== activeIdRef.current) {
             if (soundEnabledRef.current && Date.now() - lastSentRef.current >= 3000) {
