@@ -1270,6 +1270,15 @@ function AtendimentoPage() {
 
   return (
     <div className="flex h-[calc(100vh-52px)]">
+      {/* Progress bar — full width below header, visible while paginating */}
+      {loadProgress > 0 && loadProgress < 100 && (
+        <div className="fixed top-[52px] left-0 right-0 z-50 h-0.5 bg-transparent overflow-hidden">
+          <div
+            className="h-full bg-green-500 transition-all duration-300 ease-out"
+            style={{ width: `${loadProgress}%` }}
+          />
+        </div>
+      )}
       {/* In-app push notification stack — bottom-right, persistent until closed */}
       {pushNotifs.length > 0 && (
         <div className="fixed bottom-5 right-5 z-50 flex flex-col gap-2 w-80">
@@ -1353,15 +1362,7 @@ function AtendimentoPage() {
             </button>
           ))}
         </div>
-        {/* Progress bar — thin line below tabs, visible while paginating */}
-        <div className="relative h-0.5 bg-transparent overflow-hidden">
-          {loadProgress > 0 && loadProgress < 100 && (
-            <div
-              className="absolute inset-y-0 left-0 bg-orange-400 transition-all duration-300 ease-out"
-              style={{ width: `${loadProgress}%` }}
-            />
-          )}
-        </div>
+
         <div className="flex-1 overflow-y-auto">
           {loadingConvs && conversations.length === 0 || searchLoading ? (
             <div className="flex h-full items-center justify-center">
