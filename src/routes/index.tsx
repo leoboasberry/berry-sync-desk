@@ -367,6 +367,8 @@ function AtendimentoPage() {
   tabRef.current = tab;
   const activeIdRef = useRef(activeId);
   activeIdRef.current = activeId;
+  // Debounce timer for realtime-triggered sidebar refresh
+  const realtimeSidebarDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Subscription Realtime — recriada somente ao montar/desmontar
   useEffect(() => {
@@ -413,13 +415,16 @@ function AtendimentoPage() {
             });
           }
 
-          // Background refresh to sync any fields not in the event payload
-          getChatwootConversations({ data: { status: tabRef.current } })
-            .then((convs) => setConversations(convs.map((c: any) => ({
-              ...c,
-              last_message: c.last_non_activity_message ?? c.last_message ?? null,
-            }))))
-            .catch(console.error);
+          // Debounced background refresh — batches rapid events into one Chatwoot request
+          if (realtimeSidebarDebounceRef.current) clearTimeout(realtimeSidebarDebounceRef.current);
+          realtimeSidebarDebounceRef.current = setTimeout(() => {
+            getChatwootConversations({ data: { status: tabRef.current } })
+              .then((convs) => setConversations(convs.map((c: any) => ({
+                ...c,
+                last_message: c.last_non_activity_message ?? c.last_message ?? null,
+              }))))
+              .catch(console.error);
+          }, 2_000);
 
           if (activeIdRef.current) {
             getChatwootMessages({ data: { conversationId: activeIdRef.current } })
@@ -471,7 +476,7 @@ function AtendimentoPage() {
           } catch {}
         })
         .catch(() => {});
-    }, 8_000);
+    }, 30_000);
     return () => clearInterval(sidebarPoll);
   }, []);
 
@@ -756,7 +761,7 @@ function AtendimentoPage() {
           if (phone) getContactHistory({ data: { contactPhone: phone } }).then(setHistoryMessages).catch(() => {});
         })
         .catch(() => {});
-    }, 5_000);
+    }, 10_000);
 
     setHubContact(null);
     setHubChangedFields(new Set());
