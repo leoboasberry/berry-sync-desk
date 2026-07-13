@@ -343,6 +343,10 @@ function AtendimentoPage() {
   const [draftTemplateInfo, setDraftTemplateInfo] = useState<{ tpl: any; params: string[] } | null>(null);
   const [templateVars, setTemplateVars] = useState<string[]>([]);
 
+  // In-app push notifications
+  const [pushNotifs, setPushNotifs] = useState<Array<{ id: number; sender: string; preview: string; convId: number | null }>>([]);
+  const pushNotifIdRef = useRef(0);
+
   // New conversation modal
   const [newConvModal, setNewConvModal] = useState(false);
   const [newConvStep, setNewConvStep] = useState<"contact" | "template" | "vars">("contact");
@@ -451,6 +455,9 @@ function AtendimentoPage() {
                   if (hasNewIncoming && !recentlySentOwn) {
                     playNotificationSound();
                     sendBrowserNotification("Nova mensagem", ev.content ?? "");
+                    const senderName = ev.sender_name ?? ev.contact_name ?? "Nova mensagem";
+                    const id = ++pushNotifIdRef.current;
+                    setPushNotifs((prev) => [...prev, { id, sender: senderName, preview: ev.content ?? "", convId: evConvId }]);
                   }
                 }
                 prevMessagesRef.current = newMsgs;
@@ -467,6 +474,8 @@ function AtendimentoPage() {
             }
             const senderName = ev.sender_name ?? ev.contact_name ?? "Novo contato";
             sendBrowserNotification(senderName, ev.content ?? "Nova mensagem");
+            const id = ++pushNotifIdRef.current;
+            setPushNotifs((prev) => [...prev, { id, sender: senderName, preview: ev.content ?? "", convId: evConvId }]);
           }
         }
       )
@@ -1201,6 +1210,50 @@ function AtendimentoPage() {
 
   return (
     <div className="flex h-[calc(100vh-52px)]">
+      {/* In-app push notification stack — bottom-right, persistent until closed */}
+      {pushNotifs.length > 0 && (
+        <div className="fixed bottom-5 right-5 z-50 flex flex-col gap-2 w-80">
+          {pushNotifs.map((n) => (
+            <div
+              key={n.id}
+              className="flex items-start gap-3 rounded-xl border border-orange-200 dark:border-orange-900 bg-white dark:bg-[#1e1e1e] shadow-2xl p-4 animate-in slide-in-from-right-4 fade-in duration-300"
+            >
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-orange-100 dark:bg-orange-900/40 text-orange-500">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
+                  <path d="M1.5 8.67v8.58a3 3 0 003 3h15a3 3 0 003-3V8.67l-8.928 5.493a3 3 0 01-3.144 0L1.5 8.67z" />
+                  <path d="M22.5 6.908V6.75a3 3 0 00-3-3h-15a3 3 0 00-3 3v.158l9.714 5.978a1.5 1.5 0 001.572 0L22.5 6.908z" />
+                </svg>
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-start justify-between gap-2">
+                  <p className="text-sm font-semibold text-[#090909] dark:text-[#e8e8e8] truncate">{n.sender}</p>
+                  <button
+                    onClick={() => setPushNotifs((prev) => prev.filter((x) => x.id !== n.id))}
+                    className="shrink-0 text-[#999] hover:text-[#090909] dark:hover:text-[#e8e8e8] transition-colors"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
+                      <path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" />
+                    </svg>
+                  </button>
+                </div>
+                <p className="mt-0.5 text-xs text-[#666] dark:text-[#909090] line-clamp-2">{n.preview || "Nova mensagem recebida"}</p>
+                {n.convId && (
+                  <button
+                    onClick={() => {
+                      setActiveId(n.convId!);
+                      setPushNotifs((prev) => prev.filter((x) => x.id !== n.id));
+                    }}
+                    className="mt-2 text-[11px] font-semibold text-orange-500 hover:text-orange-600 transition-colors"
+                  >
+                    Ver conversa →
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Left: conversation list */}
       <aside className="flex w-[300px] flex-col border-r border-[#e5e5e5] dark:border-[#2a2a2a] bg-[#f8f8f8] dark:bg-[#1e1e1e]">
         <div className="border-b border-[#e5e5e5] dark:border-[#2a2a2a] p-3">
