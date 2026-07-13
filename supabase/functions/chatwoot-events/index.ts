@@ -21,6 +21,8 @@ Deno.serve(async (req) => {
       account_id: payload.account_id ?? null,
       conversation_id: payload.conversation?.id ?? null,
       message_type: payload.message_type ?? null,
+      content: payload.content ?? null,
+      sender_name: payload.sender?.name ?? null,
     });
 
     // Auto-assign: when an outgoing message is created in an unassigned conversation
