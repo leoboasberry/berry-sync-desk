@@ -40,6 +40,18 @@ import {
 import { supabase } from "@/integrations/supabase/client";
 import { Search, Send, Loader2, UserPlus, Play, Pause, ZoomIn, Paperclip, Smile, X, LayoutTemplate, ChevronLeft, Mic, Square, Volume2, VolumeX, Check, CheckCheck, AlertCircle, RotateCcw, Link, Trash2 } from "lucide-react";
 
+function sendBrowserNotification(title: string, body: string) {
+  if (!("Notification" in window)) return;
+  if (document.hasFocus()) return; // only notify when app is in background
+  if (Notification.permission === "granted") {
+    new Notification(title, { body, icon: "/favicon.ico" });
+  } else if (Notification.permission === "default") {
+    Notification.requestPermission().then((perm) => {
+      if (perm === "granted") new Notification(title, { body, icon: "/favicon.ico" });
+    });
+  }
+}
+
 function playNotificationSound() {
   const Ctx = window.AudioContext ?? (window as any).webkitAudioContext;
   if (!Ctx) return;
@@ -438,6 +450,7 @@ function AtendimentoPage() {
                   );
                   if (hasNewIncoming && !recentlySentOwn) {
                     playNotificationSound();
+                    sendBrowserNotification("Nova mensagem", ev.content ?? "");
                   }
                 }
                 prevMessagesRef.current = newMsgs;
@@ -447,11 +460,13 @@ function AtendimentoPage() {
                 ));
               })
               .catch(console.error);
-          } else if (isMessageCreated && soundEnabledRef.current) {
-            // Message arrived in a non-active conversation — play if not recently sent
-            if (Date.now() - lastSentRef.current >= 3000) {
+          } else if (isMessageCreated && isIncoming) {
+            // Message in a non-active conversation
+            if (soundEnabledRef.current && Date.now() - lastSentRef.current >= 3000) {
               playNotificationSound();
             }
+            const senderName = ev.sender_name ?? ev.contact_name ?? "Novo contato";
+            sendBrowserNotification(senderName, ev.content ?? "Nova mensagem");
           }
         }
       )
@@ -840,6 +855,17 @@ function AtendimentoPage() {
     return () => { clearInterval(poll); if (hubPoll) clearInterval(hubPoll); };
   }, [activeId]);
 
+  // Total unread across all visible conversations — drives document.title badge
+  const totalUnread = useMemo(
+    () => groupedConversations.reduce((n, c) => n + (c.unread_count ?? 0), 0),
+    [groupedConversations]
+  );
+
+  // Update document title with unread badge
+  useEffect(() => {
+    document.title = totalUnread > 0 ? `(${totalUnread}) Berry Atendimento` : "Berry Atendimento";
+  }, [totalUnread]);
+
   const visible = useMemo(() => {
     const q = search.toLowerCase().trim();
     if (!q) return groupedConversations;
@@ -1221,8 +1247,10 @@ function AtendimentoPage() {
             </div>
           ) : visible.length === 0 ? (
             <div className="p-8 text-center text-sm text-[#666] dark:text-[#909090]">Sem conversas</div>
-          ) : (
-            visible.map((c) => (
+          ) : (() => {
+            const unreadConvs = !search.trim() ? visible.filter((c) => (c.unread_count ?? 0) > 0) : [];
+            const readConvs = !search.trim() ? visible.filter((c) => (c.unread_count ?? 0) === 0) : visible;
+            const renderRow = (c: any) => (
               <ConversationRow
                 key={c._phone ?? c.id}
                 conv={c}
@@ -1252,8 +1280,31 @@ function AtendimentoPage() {
                   });
                 }}
               />
-            ))
-          )}
+            );
+            return (
+              <>
+                {unreadConvs.length > 0 && (
+                  <>
+                    <div className="flex items-center gap-1.5 px-3 py-1.5 bg-[#fff8e6] dark:bg-[#2a2200] border-b border-[#e5e5e5] dark:border-[#2a2a2a]">
+                      <span className="h-1.5 w-1.5 rounded-full bg-orange-400 animate-pulse" />
+                      <span className="text-[10px] font-semibold uppercase tracking-wider text-orange-500 dark:text-orange-400">
+                        Em atenção · {unreadConvs.length}
+                      </span>
+                    </div>
+                    {unreadConvs.map(renderRow)}
+                    {readConvs.length > 0 && (
+                      <div className="px-3 py-1.5 border-b border-[#e5e5e5] dark:border-[#2a2a2a]">
+                        <span className="text-[10px] font-semibold uppercase tracking-wider text-[#999] dark:text-[#686868]">
+                          Todas · {readConvs.length}
+                        </span>
+                      </div>
+                    )}
+                  </>
+                )}
+                {readConvs.map(renderRow)}
+              </>
+            );
+          })()}
         </div>
       </aside>
 
