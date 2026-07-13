@@ -385,8 +385,6 @@ function AtendimentoPage() {
   activeIdRef.current = activeId;
   const conversationsRef = useRef<any[]>([]);
   conversationsRef.current = conversations;
-  // Debounce timer for realtime-triggered sidebar refresh
-  const realtimeSidebarDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Subscription Realtime — recriada somente ao montar/desmontar
   useEffect(() => {
@@ -433,16 +431,7 @@ function AtendimentoPage() {
             });
           }
 
-          // Debounced background refresh — batches rapid events into one Chatwoot request
-          if (realtimeSidebarDebounceRef.current) clearTimeout(realtimeSidebarDebounceRef.current);
-          realtimeSidebarDebounceRef.current = setTimeout(() => {
-            getChatwootConversations({ data: { status: tabRef.current } })
-              .then((convs) => setConversations(convs.map((c: any) => ({
-                ...c,
-                last_message: c.last_non_activity_message ?? c.last_message ?? null,
-              }))))
-              .catch(console.error);
-          }, 2_000);
+          // Sidebar is updated optimistically from event data above — no Chatwoot fetch needed per event
 
           // DEBUG — remove after confirming
           console.log("[NOTIF DEBUG]", {
@@ -505,8 +494,8 @@ function AtendimentoPage() {
     return () => { supabase.removeChannel(channel); };
   }, []);
 
-  // Fallback polling for sidebar — refreshes conversations list every 8s
-  // Ensures sidebar stays in sync even when realtime events are delayed/missed
+  // Fallback polling for sidebar — 5min interval, only to catch state not covered by webhook
+  // (conversation status, can_reply, new conversations not yet in cache)
   useEffect(() => {
     const sidebarPoll = setInterval(() => {
       getChatwootConversations({ data: { status: tabRef.current } })
@@ -521,7 +510,7 @@ function AtendimentoPage() {
           } catch {}
         })
         .catch(() => {});
-    }, 30_000);
+    }, 5 * 60_000);
     return () => clearInterval(sidebarPoll);
   }, []);
 
