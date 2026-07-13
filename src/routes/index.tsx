@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { cn, initialsOf, timeAgo } from "@/lib/utils";
 import {
   getChatwootConversations,
+  getChatwootConversationsPage,
   getChatwootMessages,
   getContactHistory,
   getContactHistoryById,
@@ -320,6 +321,7 @@ function AtendimentoPage() {
   const prevHubPropsRef = useRef<Record<string, any>>({});
   const [draft, setDraft] = useState("");
   const [loadingConvs, setLoadingConvs] = useState(true);
+  const [loadProgress, setLoadProgress] = useState(0); // 0–100, shown while loading
   const [loadingMsgs, setLoadingMsgs] = useState(false);
   const [sending, setSending] = useState(false);
   const [agentName, setAgentName] = useState("");
@@ -683,97 +685,145 @@ function AtendimentoPage() {
     } catch {}
 
     setLoadingConvs(true);
+    setLoadProgress(0);
     setActiveId(null);
     setActivePhone(null);
     setMessages([]);
     setOwnerCacheReady(false);
-    getChatwootConversations({ data: { status: tab } })
-      .then((convs) => {
-        const normalized = convs.map((c: any) => ({
-          ...c,
-          last_message: c.last_non_activity_message ?? c.last_message ?? null,
-        }));
-        setConversations(normalized);
-        // Persist fresh conversations to localStorage
-        try { localStorage.setItem(cacheKey, JSON.stringify({ convs: normalized, ts: Date.now() })); } catch {}
-        // Batch-load owner cache for all conversations in this tab
-        const phones = [...new Set(
-          normalized.map((c: any) => normalizePhone(c.meta?.sender?.phone_number)).filter(Boolean)
-        )] as string[];
-        if (phones.length) {
-          getContactOwnersBatch({ data: { phones } })
-            .then((rows) => {
-              const cached = new Set(rows.map((r) => r.phone));
-              setOwnerCache((prev) => {
-                const next = { ...prev };
-                for (const r of rows) next[r.phone] = r.hubspot_owner_id;
-                return next;
-              });
-              // Cache is ready — filter can now apply correctly
-              setOwnerCacheReady(true);
-              // Fetch owner from HubSpot for phones not yet in cache — collect all, update once
-              const uncached = phones.filter((p) => !cached.has(p));
-              if (uncached.length) {
-                const runPreload = async () => {
-                  const collected: Record<string, string | null> = {};
-                  for (const phone of uncached) {
-                    try {
-                      const contact = await getHubSpotContactByPhone({
-                        data: { phone, properties: ["hubspot_owner_id"] },
-                      });
-                      collected[phone] = contact?.properties?.hubspot_owner_id ?? null;
-                    } catch (e) {
-                      console.error("owner preload error", phone, e);
-                      collected[phone] = null;
-                    }
+
+    let cancelled = false;
+    const allNormalized: any[] = [];
+
+    const afterLoad = (normalized: any[]) => {
+      // Persist fresh conversations to localStorage
+      try { localStorage.setItem(cacheKey, JSON.stringify({ convs: normalized, ts: Date.now() })); } catch {}
+      // Batch-load owner cache
+      const phones = [...new Set(
+        normalized.map((c: any) => normalizePhone(c.meta?.sender?.phone_number)).filter(Boolean)
+      )] as string[];
+      if (phones.length) {
+        getContactOwnersBatch({ data: { phones } })
+          .then((rows) => {
+            const cached = new Set(rows.map((r) => r.phone));
+            setOwnerCache((prev) => {
+              const next = { ...prev };
+              for (const r of rows) next[r.phone] = r.hubspot_owner_id;
+              return next;
+            });
+            setOwnerCacheReady(true);
+            const uncached = phones.filter((p) => !cached.has(p));
+            if (uncached.length) {
+              const runPreload = async () => {
+                const collected: Record<string, string | null> = {};
+                for (const phone of uncached) {
+                  try {
+                    const contact = await getHubSpotContactByPhone({
+                      data: { phone, properties: ["hubspot_owner_id"] },
+                    });
+                    collected[phone] = contact?.properties?.hubspot_owner_id ?? null;
+                  } catch (e) {
+                    console.error("owner preload error", phone, e);
+                    collected[phone] = null;
                   }
-                  // Single state update to avoid cascade of re-renders
-                  setOwnerCache((prev) => ({ ...prev, ...collected }));
-                  // Persist to Supabase in batch via individual upserts (fire-and-forget)
-                  for (const [phone, ownerId] of Object.entries(collected)) {
-                    upsertContactOwnerCache({ data: { phone, hubspot_owner_id: ownerId } }).catch(console.error);
-                  }
-                };
-                runPreload();
-              }
-            })
-            .catch(() => setOwnerCacheReady(true)); // on error, unblock anyway
+                }
+                setOwnerCache((prev) => ({ ...prev, ...collected }));
+                for (const [phone, ownerId] of Object.entries(collected)) {
+                  upsertContactOwnerCache({ data: { phone, hubspot_owner_id: ownerId } }).catch(console.error);
+                }
+              };
+              runPreload();
+            }
+          })
+          .catch(() => setOwnerCacheReady(true));
+      } else {
+        setOwnerCacheReady(true);
+      }
+
+      const pending = pendingConversationIdRef.current;
+      if (pending) {
+        const found = normalized.find((c: any) => c.id === pending);
+        if (found) {
+          setActiveId(pending);
+          setActivePhone(normalizePhone(found.meta?.sender?.phone_number));
+          pendingConversationIdRef.current = null;
+          navigate({ to: "/", search: {}, replace: true });
         } else {
-          setOwnerCacheReady(true);
+          getChatwootConversationById({ data: { conversationId: pending } })
+            .then((conv: any) => {
+              const convStatus: Tab = conv.status ?? "open";
+              setConversations((prev) => {
+                if (prev.some((c) => c.id === conv.id)) return prev;
+                return [conv, ...prev];
+              });
+              setActiveId(conv.id);
+              setActivePhone(normalizePhone(conv.meta?.sender?.phone_number));
+              setTab(convStatus);
+              pendingConversationIdRef.current = null;
+              navigate({ to: "/", search: {}, replace: true });
+            })
+            .catch(console.error);
         }
-        const convs2 = normalized;
-        const pending = pendingConversationIdRef.current;
-        if (pending) {
-          const found = convs2.find((c: any) => c.id === pending);
-          if (found) {
-            setActiveId(pending);
-            setActivePhone(normalizePhone(found.meta?.sender?.phone_number));
-            pendingConversationIdRef.current = null;
-            navigate({ to: "/", search: {}, replace: true });
-          } else {
-            // Conversation not in current tab — fetch it directly and switch tab
-            getChatwootConversationById({ data: { conversationId: pending } })
-              .then((conv: any) => {
-                const convStatus: Tab = conv.status ?? "open";
-                setConversations((prev) => {
-                  if (prev.some((c) => c.id === conv.id)) return prev;
-                  return [conv, ...prev];
-                });
-                setActiveId(conv.id);
-                setActivePhone(normalizePhone(conv.meta?.sender?.phone_number));
-                setTab(convStatus);
-                pendingConversationIdRef.current = null;
-                navigate({ to: "/", search: {}, replace: true });
-              })
-              .catch(console.error);
+      } else if (normalized.length > 0) {
+        setActiveId(normalized[0].id);
+        setActivePhone(normalizePhone(normalized[0]?.meta?.sender?.phone_number));
+      }
+    };
+
+    (async () => {
+      try {
+        let page = 1;
+        let total = 0;
+        let loaded = 0;
+        let firstPageDone = false;
+
+        while (true) {
+          if (cancelled) return;
+          const { convs: batch, total: t } = await getChatwootConversationsPage({
+            data: { status: tab, page },
+          });
+          if (cancelled) return;
+
+          if (page === 1) total = t;
+
+          const norm = batch.map((c: any) => ({
+            ...c,
+            last_message: c.last_non_activity_message ?? c.last_message ?? null,
+          }));
+          allNormalized.push(...norm);
+          loaded += batch.length;
+
+          // Merge with existing conversations (from cache) to avoid flicker
+          setConversations((prev) => {
+            const byId = new Map<number, any>();
+            for (const c of prev) byId.set(c.id, c);
+            for (const c of allNormalized) byId.set(c.id, c);
+            return Array.from(byId.values()).sort(
+              (a, b) => (b.last_activity_at ?? 0) - (a.last_activity_at ?? 0)
+            );
+          });
+
+          const progress = total > 0 ? Math.round((loaded / total) * 100) : 100;
+          setLoadProgress(Math.min(progress, 99));
+
+          if (!firstPageDone) {
+            setLoadingConvs(false);
+            firstPageDone = true;
           }
-        } else if (convs2.length > 0) {
-          setActiveId(convs2[0].id);
-          setActivePhone(normalizePhone(convs2[0]?.meta?.sender?.phone_number));
+
+          if (batch.length < 25) break;
+          page++;
         }
-      })
-      .catch(console.error)
-      .finally(() => setLoadingConvs(false));
+
+        if (cancelled) return;
+        setLoadProgress(100);
+        afterLoad(allNormalized);
+        setTimeout(() => setLoadProgress(0), 400);
+      } catch (e) {
+        console.error(e);
+      } finally {
+        if (!cancelled) setLoadingConvs(false);
+      }
+    })();
   }, [tab]);
 
   useEffect(() => {
@@ -1303,8 +1353,17 @@ function AtendimentoPage() {
             </button>
           ))}
         </div>
+        {/* Progress bar — thin line below tabs, visible while paginating */}
+        <div className="relative h-0.5 bg-transparent overflow-hidden">
+          {loadProgress > 0 && loadProgress < 100 && (
+            <div
+              className="absolute inset-y-0 left-0 bg-orange-400 transition-all duration-300 ease-out"
+              style={{ width: `${loadProgress}%` }}
+            />
+          )}
+        </div>
         <div className="flex-1 overflow-y-auto">
-          {loadingConvs || searchLoading ? (
+          {loadingConvs && conversations.length === 0 || searchLoading ? (
             <div className="flex h-full items-center justify-center">
               <Loader2 className="h-5 w-5 animate-spin text-[#999] dark:text-[#686868]" />
             </div>

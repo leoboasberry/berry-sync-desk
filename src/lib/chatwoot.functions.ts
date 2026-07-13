@@ -69,6 +69,21 @@ export const getChatwootConversations = createServerFn({ method: "POST" })
     );
   });
 
+// Returns a single page of conversations + total count for progressive loading
+export const getChatwootConversationsPage = createServerFn({ method: "POST" })
+  .inputValidator((data: { status: "open" | "pending" | "resolved"; page: number }) => data)
+  .handler(async ({ data }) => {
+    const s = await getChatwootSettings();
+    const url = `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/conversations?status=${data.status}&assignee_type=all&page=${data.page}`;
+    const res = await fetch(url, { headers: { api_access_token: s.chatwoot_token! } });
+    if (!res.ok) throw new Error(`Chatwoot error: ${res.status}`);
+    const json = await res.json();
+    const convs: any[] = json.data?.payload ?? [];
+    const total: number = (json.data?.meta?.all_count ?? json.data?.meta?.assigned_count ?? 0) +
+      (json.data?.meta?.unassigned_count ?? 0);
+    return { convs, total };
+  });
+
 export const getAllChatwootConversations = createServerFn({ method: "POST" })
   .inputValidator((data: { status: "open" | "pending" | "resolved" }) => data)
   .handler(async ({ data }) => {
