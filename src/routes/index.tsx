@@ -520,11 +520,45 @@ function AtendimentoPage() {
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
-  // When search is active, load conversations from all statuses — debounced 400ms
+  // When search is active, search locally from localStorage cache (instant)
+  // then refresh from Chatwoot in background if cache is stale (>2min)
   useEffect(() => {
     if (!search.trim()) { setSearchAllConvs([]); return; }
-    setSearchLoading(true);
-    const timer = setTimeout(() => {
+
+    // Immediate: merge all cached tabs from localStorage
+    const loadFromCache = () => {
+      const byId = new Map<number, any>();
+      for (const status of ["open", "pending", "resolved"] as const) {
+        try {
+          const raw = localStorage.getItem(`berry_convs_${status}`);
+          if (!raw) continue;
+          const { convs } = JSON.parse(raw);
+          if (Array.isArray(convs)) {
+            for (const c of convs) byId.set(c.id, c);
+          }
+        } catch {}
+      }
+      return Array.from(byId.values());
+    };
+
+    const cached = loadFromCache();
+    if (cached.length) {
+      setSearchAllConvs(cached);
+      setSearchLoading(false);
+    } else {
+      setSearchLoading(true);
+    }
+
+    // Background refresh from Chatwoot if cache is old or missing
+    const cacheAge = (() => {
+      try {
+        const raw = localStorage.getItem("berry_convs_open");
+        if (!raw) return Infinity;
+        return Date.now() - JSON.parse(raw).ts;
+      } catch { return Infinity; }
+    })();
+
+    if (cacheAge > 2 * 60_000) {
       Promise.all([
         getChatwootConversations({ data: { status: "open" } }),
         getChatwootConversations({ data: { status: "pending" } }),
@@ -533,15 +567,13 @@ function AtendimentoPage() {
         .then(([open, pending, resolved]) => {
           const byId = new Map<number, any>();
           for (const c of [...open, ...pending, ...resolved]) {
-            const normalized = { ...c, last_message: c.last_non_activity_message ?? c.last_message ?? null };
-            byId.set(c.id, normalized);
+            byId.set(c.id, { ...c, last_message: c.last_non_activity_message ?? c.last_message ?? null });
           }
           setSearchAllConvs(Array.from(byId.values()));
         })
         .catch(console.error)
         .finally(() => setSearchLoading(false));
-    }, 400);
-    return () => clearTimeout(timer);
+    }
   }, [search]);
 
   const displayedConversations = useMemo(() => {
