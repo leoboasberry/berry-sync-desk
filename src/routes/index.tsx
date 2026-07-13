@@ -383,6 +383,8 @@ function AtendimentoPage() {
   tabRef.current = tab;
   const activeIdRef = useRef(activeId);
   activeIdRef.current = activeId;
+  const conversationsRef = useRef<any[]>([]);
+  conversationsRef.current = conversations;
   // Debounce timer for realtime-triggered sidebar refresh
   const realtimeSidebarDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -454,10 +456,14 @@ function AtendimentoPage() {
                   );
                   if (hasNewIncoming && !recentlySentOwn) {
                     playNotificationSound();
-                    sendBrowserNotification("Nova mensagem", ev.content ?? "");
-                    const senderName = ev.sender_name ?? ev.contact_name ?? "Nova mensagem";
-                    const id = ++pushNotifIdRef.current;
-                    setPushNotifs((prev) => [...prev, { id, sender: senderName, preview: ev.content ?? "", convId: evConvId }]);
+                    // Only show visual notif if app is not focused on this conversation
+                    if (document.hidden || document.visibilityState === "hidden") {
+                      const conv = evConvId ? conversationsRef.current.find((c) => c.id === evConvId) : null;
+                      const senderName = conv?.meta?.sender?.name ?? "Nova mensagem";
+                      sendBrowserNotification(senderName, ev.content ?? "");
+                      const id = ++pushNotifIdRef.current;
+                      setPushNotifs((prev) => [...prev, { id, sender: senderName, preview: ev.content ?? "", convId: evConvId }]);
+                    }
                   }
                 }
                 prevMessagesRef.current = newMsgs;
@@ -468,11 +474,12 @@ function AtendimentoPage() {
               })
               .catch(console.error);
           } else if (isMessageCreated && isIncoming) {
-            // Message in a non-active conversation
+            // Message in a non-active conversation — always notify
             if (soundEnabledRef.current && Date.now() - lastSentRef.current >= 3000) {
               playNotificationSound();
             }
-            const senderName = ev.sender_name ?? ev.contact_name ?? "Novo contato";
+            const conv = evConvId ? conversationsRef.current.find((c) => c.id === evConvId) : null;
+            const senderName = conv?.meta?.sender?.name ?? "Novo contato";
             sendBrowserNotification(senderName, ev.content ?? "Nova mensagem");
             const id = ++pushNotifIdRef.current;
             setPushNotifs((prev) => [...prev, { id, sender: senderName, preview: ev.content ?? "", convId: evConvId }]);
