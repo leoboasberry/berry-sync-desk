@@ -444,6 +444,18 @@ function AtendimentoPage() {
               .catch(console.error);
           }, 2_000);
 
+          // Notify for incoming messages in non-active conversations — always, regardless of focus
+          if (isMessageCreated && isIncoming && evConvId !== activeIdRef.current) {
+            if (soundEnabledRef.current && Date.now() - lastSentRef.current >= 3000) {
+              playNotificationSound();
+            }
+            const conv = evConvId ? conversationsRef.current.find((c) => c.id === evConvId) : null;
+            const senderName = conv?.meta?.sender?.name ?? "Novo contato";
+            sendBrowserNotification(senderName, ev.content ?? "Nova mensagem");
+            const id = ++pushNotifIdRef.current;
+            setPushNotifs((prev) => [...prev, { id, sender: senderName, preview: ev.content ?? "", convId: evConvId }]);
+          }
+
           if (activeIdRef.current) {
             getChatwootMessages({ data: { conversationId: activeIdRef.current } })
               .then((result) => {
@@ -454,16 +466,13 @@ function AtendimentoPage() {
                   const hasNewIncoming = newMsgs.some(
                     (m: any) => !prevIds.has(m.id) && m.message_type === 0
                   );
-                  if (hasNewIncoming && !recentlySentOwn) {
-                    playNotificationSound();
-                    // Only show visual notif if app is not focused on this conversation
-                    if (document.hidden || document.visibilityState === "hidden") {
-                      const conv = evConvId ? conversationsRef.current.find((c) => c.id === evConvId) : null;
-                      const senderName = conv?.meta?.sender?.name ?? "Nova mensagem";
-                      sendBrowserNotification(senderName, ev.content ?? "");
-                      const id = ++pushNotifIdRef.current;
-                      setPushNotifs((prev) => [...prev, { id, sender: senderName, preview: ev.content ?? "", convId: evConvId }]);
-                    }
+                  // Active conversation: only show visual notif when app is in background
+                  if (hasNewIncoming && !recentlySentOwn && (document.hidden || document.visibilityState === "hidden")) {
+                    const conv = evConvId ? conversationsRef.current.find((c) => c.id === evConvId) : null;
+                    const senderName = conv?.meta?.sender?.name ?? "Nova mensagem";
+                    sendBrowserNotification(senderName, ev.content ?? "");
+                    const id = ++pushNotifIdRef.current;
+                    setPushNotifs((prev) => [...prev, { id, sender: senderName, preview: ev.content ?? "", convId: evConvId }]);
                   }
                 }
                 prevMessagesRef.current = newMsgs;
@@ -473,16 +482,6 @@ function AtendimentoPage() {
                 ));
               })
               .catch(console.error);
-          } else if (isMessageCreated && isIncoming) {
-            // Message in a non-active conversation — always notify
-            if (soundEnabledRef.current && Date.now() - lastSentRef.current >= 3000) {
-              playNotificationSound();
-            }
-            const conv = evConvId ? conversationsRef.current.find((c) => c.id === evConvId) : null;
-            const senderName = conv?.meta?.sender?.name ?? "Novo contato";
-            sendBrowserNotification(senderName, ev.content ?? "Nova mensagem");
-            const id = ++pushNotifIdRef.current;
-            setPushNotifs((prev) => [...prev, { id, sender: senderName, preview: ev.content ?? "", convId: evConvId }]);
           }
         }
       )
