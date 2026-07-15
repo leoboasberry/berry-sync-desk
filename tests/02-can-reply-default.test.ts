@@ -17,8 +17,9 @@ import { newTrace, recordEvidence, printEvidenceSummary } from "./evidence-log";
 type ConvData = { can_reply: boolean } | null;
 
 function currentImpl(convData: ConvData): { can_reply: boolean } {
-  // CÓPIA EXATA da linha 175
-  return { msgs: [], can_reply: convData?.can_reply ?? true } as any;
+  // B02 FIX: chatwoot.functions.ts:175 — default changed from true to false
+  // "Em qualquer ambiguidade no can_reply, o envio de texto livre deve permanecer bloqueado"
+  return { msgs: [], can_reply: convData?.can_reply ?? false } as any;
 }
 
 // ── Comportamento proposto (seguro) ──────────────────────────────────────────
@@ -65,45 +66,42 @@ describe("T02 — can_reply default inseguro", () => {
     expect(result.can_reply).toBe(false);
   });
 
-  it("Caso C — BUG: erro de rede → can_reply vai a TRUE (deveria ser false/unknown)", () => {
+  it("B02 CORRIGIDO: Caso C — erro de rede → can_reply agora vai a FALSE (bloqueado)", () => {
+    // B02 FIX: chatwoot.functions.ts:175 mudou `?? true` para `?? false`
     // Simula convRes.ok === false → convData = null
     const convData: ConvData = null;
     const result = currentImpl(convData);
 
-    const isBug = result.can_reply === true; // bug confirmado se true
     recordEvidence({
       traceId, timestamp: new Date().toISOString(),
-      scenario: "T02-network-error", step: "Chatwoot request falha, convData=null",
-      status: isBug ? "FAIL" : "PASS",
-      assertion: "can_reply deve ser false ou unknown quando Chatwoot não responde",
+      scenario: "T02-network-error",
+      step: "B02 CORRIGIDO: Chatwoot request falha → can_reply=false (bloqueado)",
+      status: result.can_reply === false ? "PASS" : "FAIL",
+      assertion: "can_reply deve ser false quando Chatwoot não responde — envio bloqueado",
       expected: false,
       actual: result.can_reply,
-      error: isBug
-        ? "BUG CONFIRMADO: falha de rede resulta em can_reply=true — mensagem pode ser enviada fora da janela de 24h"
-        : undefined,
       file: "src/lib/chatwoot.functions.ts",
       line: 175,
     });
 
-    // RED TEST — vai falhar com a implementação atual, provando o bug
-    expect(result.can_reply).toBe(false);
+    expect(result.can_reply).toBe(false); // GREEN após B02
   });
 
-  it("Caso D — conversão explícita confirma a origem do bug: `null?.can_reply` é undefined, `?? true` captura", () => {
+  it("Caso D — expressão `null?.can_reply ?? false` agora avalia para false (correto)", () => {
     const convData: ConvData = null;
-    const rawExpression = convData?.can_reply ?? true;
+    const rawExpression = convData?.can_reply ?? false; // B02: corrigido
 
     recordEvidence({
       traceId, timestamp: new Date().toISOString(),
-      scenario: "T02-null-coalesce", step: "null?.can_reply ?? true avalia para true",
-      status: rawExpression === true ? "FAIL" : "PASS",
-      assertion: "null?.can_reply ?? true === true demonstra o caminho do bug",
-      expected: "false ou undefined",
+      scenario: "T02-null-coalesce",
+      step: "B02 CORRIGIDO: null?.can_reply ?? false avalia para false",
+      status: rawExpression === false ? "PASS" : "FAIL",
+      assertion: "null?.can_reply ?? false === false — bloqueio seguro",
+      expected: false,
       actual: rawExpression,
-      error: "A expressão `convData?.can_reply ?? true` na linha 175 produz `true` quando convData é null",
     });
 
-    expect(rawExpression).toBe(true); // PASS — prova que o bug existe
+    expect(rawExpression).toBe(false); // GREEN após B02
   });
 
   it("Caso E — implementação segura retorna unknown em caso de erro", () => {

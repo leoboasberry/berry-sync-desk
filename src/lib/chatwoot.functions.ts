@@ -171,8 +171,8 @@ export const getChatwootMessages = createServerFn({ method: "POST" })
     if (authoritativePhone) {
       await upsertMessagesToHistory(msgs, authoritativePhone, data.conversationId);
     }
-    // Return can_reply alongside messages so the client can detect expired 24h windows
-    return { msgs, can_reply: convData?.can_reply ?? true };
+    // B02: default to false — ambiguous can_reply must block free-text sending
+    return { msgs, can_reply: convData?.can_reply ?? false };
   });
 
 export const getContactHistory = createServerFn({ method: "POST" })
