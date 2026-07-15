@@ -1309,8 +1309,20 @@ function AtendimentoPage() {
                 {n.convId && (
                   <button
                     onClick={() => {
-                      setActiveId(n.convId!);
+                      const convId = n.convId!;
                       setPushNotifs((prev) => prev.filter((x) => x.id !== n.id));
+                      // Find conversation in current list to check its tab
+                      const found = conversationsRef.current.find((c) => c.id === convId);
+                      if (found) {
+                        const convTab: Tab = found.status ?? "open";
+                        if (convTab !== tabRef.current) setTab(convTab);
+                        setActiveId(convId);
+                        setActivePhone(normalizePhone(found.meta?.sender?.phone_number));
+                      } else {
+                        // Not loaded yet — use pendingConversationIdRef to open after load
+                        pendingConversationIdRef.current = convId;
+                        setActiveId(convId);
+                      }
                     }}
                     className="mt-2 text-[11px] font-semibold text-orange-500 hover:text-orange-600 transition-colors"
                   >
