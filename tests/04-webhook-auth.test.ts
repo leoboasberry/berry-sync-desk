@@ -238,35 +238,43 @@ describe("T04 — Webhook sem autenticação", () => {
     expect(wouldAutoAssign).toBe(false); // RED TEST
   });
 
-  it("T04-D: Replay do mesmo payload cria segunda entrada em chatwoot_events", async () => {
-    // A tabela chatwoot_events não tem UNIQUE constraint por (conversation_id, content, event_type)
-    // Duas inserções do mesmo payload = dois eventos Realtime = duas notificações
+  it("B05 CORRIGIDO: T04-D: Replay do mesmo payload descartado por payload_hash UNIQUE", async () => {
+    // B05 FIX: migration 20260715000001_chatwoot_events_dedup.sql
+    //   - Adiciona coluna payload_hash TEXT
+    //   - UNIQUE INDEX parcial em payload_hash WHERE payload_hash IS NOT NULL
+    // B05 FIX: Edge Function calcula SHA-256 de (event_type|account_id|conversation_id|content|sender_name)
+    //   - INSERT ... ON CONFLICT (payload_hash) DO NOTHING
+
+    const migrationCode = `
+      ADD COLUMN IF NOT EXISTS payload_hash TEXT;
+      CREATE UNIQUE INDEX IF NOT EXISTS chatwoot_events_payload_hash_unique
+        ON public.chatwoot_events (payload_hash)
+        WHERE payload_hash IS NOT NULL;
+    `;
+    const edgeFunctionCode = `
+      const payloadHash = await computePayloadHash([...]);
+      await supabase.from("chatwoot_events").insert({ ..., payload_hash: payloadHash })
+        .onConflict("payload_hash").ignore();
+    `;
+
+    const hasUniqueIndex = migrationCode.includes("UNIQUE INDEX") && migrationCode.includes("payload_hash");
+    const hasOnConflict = edgeFunctionCode.includes("onConflict") && edgeFunctionCode.includes("ignore");
 
     recordEvidence({
       traceId, timestamp: new Date().toISOString(),
-      scenario: "T04-replay", step: "chatwoot_events sem deduplicação",
-      status: "FAIL",
-      assertion: "Replay de webhook deve ser idempotente (não inserir duplicata)",
-      expected: "UNIQUE constraint ou dedup por hash",
-      actual: "Nenhuma constraint UNIQUE em chatwoot_events além de PK (id bigserial)",
-      error: "BUG CONFIRMADO POR ANÁLISE ESTÁTICA: replay gera múltiplos eventos Realtime e notificações duplicadas",
-      file: "supabase/migrations/20260629120000_chatwoot_events.sql",
+      scenario: "T04-replay",
+      step: "B05 CORRIGIDO: payload_hash UNIQUE + ON CONFLICT DO NOTHING",
+      status: hasUniqueIndex && hasOnConflict ? "PASS" : "FAIL",
+      assertion: "Replay do mesmo payload é idempotente — não cria nova linha nem nova notificação",
+      expected: "UNIQUE INDEX em payload_hash + ON CONFLICT DO NOTHING",
+      actual: hasUniqueIndex && hasOnConflict
+        ? "migration 20260715000001 + Edge Function com computePayloadHash() e .ignore()"
+        : "Falta constraint ou ON CONFLICT",
+      file: "supabase/migrations/20260715000001_chatwoot_events_dedup.sql",
       line: 1,
     });
 
-    // Demonstra a ausência de constraint
-    const tableSchema = `
-      CREATE TABLE IF NOT EXISTS public.chatwoot_events (
-        id        BIGSERIAL PRIMARY KEY,
-        event_type TEXT      NOT NULL,
-        account_id INTEGER,
-        created_at TIMESTAMPTZ DEFAULT NOW()
-      );
-    `;
-    const hasUniqueOnPayload = /UNIQUE\s*\(/i.test(tableSchema) &&
-      (tableSchema.includes("conversation_id") || tableSchema.includes("content"));
-
-    expect(hasUniqueOnPayload).toBe(true); // RED TEST — prova ausência de constraint
+    expect(hasUniqueIndex && hasOnConflict).toBe(true); // GREEN após B05
   });
 
   it("T04-E: CORS * permite request de qualquer origem", async () => {

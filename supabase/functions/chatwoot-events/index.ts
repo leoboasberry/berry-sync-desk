@@ -70,6 +70,12 @@ Deno.serve(async (req) => {
   }
 });
 
+async function computePayloadHash(parts: string[]): Promise<string> {
+  const data = new TextEncoder().encode(parts.join("|"));
+  const buf = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 async function handlePayload(payload: Record<string, unknown>): Promise<Response> {
   try {
     const supabase = createClient(
@@ -77,18 +83,30 @@ async function handlePayload(payload: Record<string, unknown>): Promise<Response
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
     );
 
+    const conversation = payload.conversation as Record<string, unknown> | undefined;
+    const sender = payload.sender as Record<string, unknown> | undefined;
+
+    // B05: compute dedup hash from stable payload fields (no timestamps)
+    const payloadHash = await computePayloadHash([
+      String(payload.event ?? ""),
+      String(payload.account_id ?? ""),
+      String(conversation?.id ?? ""),
+      String(payload.content ?? ""),
+      String(sender?.name ?? ""),
+    ]);
+
+    // ON CONFLICT DO NOTHING: replay of same payload is silently discarded
     await supabase.from("chatwoot_events").insert({
       event_type: payload.event ?? "unknown",
       account_id: payload.account_id ?? null,
-      conversation_id: (payload.conversation as Record<string, unknown>)?.id ?? null,
+      conversation_id: conversation?.id ?? null,
       message_type: payload.message_type ?? null,
       content: payload.content ?? null,
-      sender_name: (payload.sender as Record<string, unknown>)?.name ?? null,
-    });
+      sender_name: sender?.name ?? null,
+      payload_hash: payloadHash,
+    }).onConflict("payload_hash").ignore();
 
     // Auto-assign: when an outgoing message is created in an unassigned conversation
-    const conversation = payload.conversation as Record<string, unknown> | undefined;
-    const sender = payload.sender as Record<string, unknown> | undefined;
     if (
       payload.event === "message_created" &&
       payload.message_type === "outgoing" &&
