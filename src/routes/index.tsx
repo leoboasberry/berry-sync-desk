@@ -331,6 +331,7 @@ function AtendimentoPage() {
   const [ownerCacheReady, setOwnerCacheReady] = useState(false);
   const [myRole, setMyRole] = useState<"admin" | "agent" | null>(null);
   const [myChatwootAgentId, setMyChatwootAgentId] = useState<number | null>(null);
+  const [chatwootAccountId, setChatwootAccountId] = useState<number | null>(null);
   const [attachFile, setAttachFile] = useState<AttachFile | null>(null);
   const [recording, setRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
@@ -388,13 +389,20 @@ function AtendimentoPage() {
   const conversationsRef = useRef<any[]>([]);
   conversationsRef.current = conversations;
 
-  // Subscription Realtime — recriada somente ao montar/desmontar
+  // Subscription Realtime — criada somente após ter o account_id (B06: filtro por tenant)
   useEffect(() => {
+    if (!chatwootAccountId) return; // aguarda account_id antes de subscrever
+
     const channel = supabase
-      .channel("chatwoot_events_watch")
+      .channel(`chatwoot_events_watch_${chatwootAccountId}`)
       .on(
         "postgres_changes",
-        { event: "INSERT", schema: "public", table: "chatwoot_events" },
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "chatwoot_events",
+          filter: `account_id=eq.${chatwootAccountId}`, // B06: só eventos desta conta
+        },
         (event) => {
           const ev = event.new as any;
           const isMessageCreated = ev?.event_type === "message_created";
@@ -494,7 +502,7 @@ function AtendimentoPage() {
       });
 
     return () => { supabase.removeChannel(channel); };
-  }, []);
+  }, [chatwootAccountId]);
 
   // Fallback polling for sidebar — 5min interval, only to catch state not covered by webhook
   // (conversation status, can_reply, new conversations not yet in cache)
@@ -538,6 +546,11 @@ function AtendimentoPage() {
         }
       }
     })();
+    // Carrega chatwoot_account_id para filtrar subscription Realtime por tenant (B06)
+    supabase.from("settings").select("chatwoot_account_id").eq("id", 1).maybeSingle()
+      .then(({ data }) => { if (data?.chatwoot_account_id) setChatwootAccountId(data.chatwoot_account_id); })
+      .catch(console.error);
+
     getHubSpotVisibleFields()
       .then((fields) => { if (fields?.length) setVisibleFields(fields); })
       .catch(console.error);
