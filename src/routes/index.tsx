@@ -469,8 +469,12 @@ function AtendimentoPage() {
           }
 
           if (activeIdRef.current) {
-            getChatwootMessages({ data: { conversationId: activeIdRef.current } })
+            // B08: capture ID before async call — activeIdRef may change during await
+            const requestedConvId = activeIdRef.current;
+            getChatwootMessages({ data: { conversationId: requestedConvId } })
               .then((result) => {
+                // Discard result if user switched conversations during the await
+                if (activeIdRef.current !== requestedConvId) return;
                 const newMsgs = result.msgs;
                 if (isMessageCreated && soundEnabledRef.current) {
                   const prevIds = new Set(prevMessagesRef.current.map((m: any) => m.id));
@@ -490,7 +494,7 @@ function AtendimentoPage() {
                 prevMessagesRef.current = newMsgs;
                 setMessages(newMsgs);
                 setConversations((prev) => prev.map((c) =>
-                  c.id === activeIdRef.current ? { ...c, can_reply: result.can_reply } : c
+                  c.id === requestedConvId ? { ...c, can_reply: result.can_reply } : c
                 ));
               })
               .catch(console.error);
