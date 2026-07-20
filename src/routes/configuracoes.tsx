@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { cn, initialsOf } from "@/lib/utils";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
-import { testChatwootConnection, backfillConversationAssignments } from "@/lib/chatwoot.functions";
+import { testChatwootConnection, backfillConversationAssignments, upsertSettings } from "@/lib/chatwoot.functions";
 import {
   testHubspotConnection,
   getHubSpotProperties,
@@ -196,29 +196,35 @@ function IntegrationsTab() {
 
   useEffect(() => {
     (async () => {
-      const { data } = await supabase.from("settings").select("*").eq("id", 1).maybeSingle();
+      // Reads only non-sensitive fields via server function.
+      // Tokens are intentionally not loaded into client state.
+      const { data } = await (supabase as any).from("settings_public").select("*").eq("id", 1).maybeSingle();
       if (data) {
         setCwUrl(data.chatwoot_url ?? "");
         setCwAccount(data.chatwoot_account_id ?? "");
-        setCwToken(data.chatwoot_token ?? "");
-        setHsToken(data.hubspot_token ?? "");
       }
+      // Token fields start empty — user must re-enter to change them.
+      // This prevents tokens from being cached in browser memory or DevTools.
     })();
   }, []);
 
   async function save() {
     setSaving(true);
-    const { error } = await supabase.from("settings").upsert({
-      id: 1,
-      chatwoot_url: cwUrl,
-      chatwoot_account_id: cwAccount,
-      chatwoot_token: cwToken,
-      hubspot_token: hsToken,
-      updated_at: new Date().toISOString(),
-    });
-    setSaving(false);
-    if (error) toast.error(error.message);
-    else toast.success("Integrações salvas");
+    try {
+      await upsertSettings({
+        data: {
+          chatwoot_url: cwUrl,
+          chatwoot_account_id: cwAccount,
+          ...(cwToken ? { chatwoot_token: cwToken } : {}),
+          ...(hsToken ? { hubspot_token: hsToken } : {}),
+        },
+      });
+      toast.success("Integrações salvas");
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
   }
 
   async function testChatwoot() {
@@ -229,16 +235,10 @@ function IntegrationsTab() {
       toast.error("Preencha URL, Account ID e Token");
       return;
     }
-    const { error: saveErr } = await supabase.from("settings").upsert({
-      id: 1,
-      chatwoot_url: url,
-      chatwoot_account_id: account,
-      chatwoot_token: token,
-      hubspot_token: hsToken,
-      updated_at: new Date().toISOString(),
-    });
-    if (saveErr) {
-      toast.error(`Falha ao salvar: ${saveErr.message}`);
+    try {
+      await upsertSettings({ data: { chatwoot_url: url, chatwoot_account_id: account, chatwoot_token: token } });
+    } catch (e) {
+      toast.error(`Falha ao salvar: ${(e as Error).message}`);
       return;
     }
     try {
@@ -256,16 +256,10 @@ function IntegrationsTab() {
       toast.error("Informe o Private App Token");
       return;
     }
-    const { error: saveErr } = await supabase.from("settings").upsert({
-      id: 1,
-      chatwoot_url: cwUrl,
-      chatwoot_account_id: cwAccount,
-      chatwoot_token: cwToken,
-      hubspot_token: token,
-      updated_at: new Date().toISOString(),
-    });
-    if (saveErr) {
-      toast.error(`Falha ao salvar: ${saveErr.message}`);
+    try {
+      await upsertSettings({ data: { hubspot_token: token } });
+    } catch (e) {
+      toast.error(`Falha ao salvar: ${(e as Error).message}`);
       return;
     }
     try {

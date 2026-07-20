@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head><meta charset="UTF-8"><title>Berry Lifecycle E2E Test Page</title></head>
+<body>
+<script>
+// Minimal implementation of the BroadcastChannel envelope protocol
+// used by cache-lifecycle.ts — for real-browser E2E validation.
+window.__lc = {
+  tabId: crypto.randomUUID(),
+  channelName: null,
+  channel: null,
+  received: [],
+  closed: false,
+
+  init(channelName) {
+    this.channelName = channelName;
+    this.channel = new BroadcastChannel(channelName);
+    this.channel.onmessage = (e) => {
+      if (this.closed) return;
+      const d = e.data;
+      if (!d || typeof d !== 'object') return;
+      if (d.tabId === this.tabId) return; // ignore own
+      this.received.push(d);
+    };
+  },
+
+  send(payload, accountId) {
+    if (this.closed || !this.channel) return;
+    this.channel.postMessage({
+      version: 1,
+      env: 'e2e',
+      userId: 'test-user',
+      accountId: accountId ?? 1,
+      tabId: this.tabId,
+      timestamp: Date.now(),
+      payload,
+    });
+  },
+
+  close() {
+    this.closed = true;
+    this.channel?.close();
+    this.channel = null;
+  },
+
+  // Web Locks: run a task exclusively
+  async runWithLock(name, fn) {
+    if (!navigator.locks) {
+      // Fallback: just run (no real coordination in this fixture)
+      await fn();
+      return;
+    }
+    await navigator.locks.request(name, { ifAvailable: true }, async (lock) => {
+      if (!lock) return; // skip if taken
+      await fn();
+    });
+  },
+
+  lockExecuted: false,
+};
+</script>
+</body>
+</html>

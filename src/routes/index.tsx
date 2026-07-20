@@ -1,5 +1,27 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  createCacheLifecycle,
+  type CacheLifecycle,
+} from "@/lib/cache-lifecycle";
+import { syncConversations } from "@/lib/conversation-sync";
+import { syncMessages } from "@/lib/message-sync";
+import {
+  getConversationsFromCache,
+  getActiveMessagesFromCache,
+  upsertMessages,
+  markMessageStale,
+  onLogout as dbOnLogout,
+} from "@/lib/db";
+import type { CacheEnv } from "@/lib/db";
+import {
+  FLAG_MESSAGE_CACHE,
+  FLAG_CONVERSATION_CACHE,
+  isFeatureEnabledSync,
+  invalidateFlagsCache,
+  _testInjectFlags,
+} from "@/lib/feature-flags";
+import { shouldNotify, clearAllNotifState } from "@/lib/notification-dedup";
 import { toast } from "sonner";
 import { AppShell } from "@/components/AppShell";
 import { Input } from "@/components/ui/input";
@@ -130,6 +152,17 @@ function formatAudioTime(s: number) {
 }
 
 const SPEEDS = [0.5, 1, 1.5, 2] as const;
+
+// ── Shared deterministic sort for all conversation lists ──────────────────────
+// Rule: last_activity_at DESC, then conversation id DESC as tiebreaker.
+// Used in: cache load, page load, merge, Realtime update, SYNC_FINISHED reload.
+function sortConversations(convs: any[]): any[] {
+  return [...convs].sort((a, b) => {
+    const byActivity = (b.last_activity_at ?? 0) - (a.last_activity_at ?? 0);
+    if (byActivity !== 0) return byActivity;
+    return (b.id ?? 0) - (a.id ?? 0);
+  });
+}
 
 function AudioPlayer({ src, fromAgent }: { src: string; fromAgent: boolean }) {
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -381,9 +414,19 @@ function AtendimentoPage() {
   const lastSentRef = useRef<number>(0);
   const prevMessagesRef = useRef<any[]>([]);
 
-  // Refs para o Realtime ter acesso aos valores atuais sem recriar a subscription
+  // Cache scope state (resolved async from Supabase auth)
+  const [cacheUserId, setCacheUserId] = useState<string | null>(null);
+  const lifecycleRef = useRef<CacheLifecycle | null>(null);
+  const loadGenerationRef = useRef(0);
+
+  // Refs kept in sync with state — used inside callbacks/intervals/polls
+  // to read current values without depending on stale closure captures.
   const tabRef = useRef(tab);
   tabRef.current = tab;
+  const cacheUserIdRef = useRef(cacheUserId);
+  cacheUserIdRef.current = cacheUserId;
+  const accountIdRef = useRef(chatwootAccountId);
+  accountIdRef.current = chatwootAccountId;
   const activeIdRef = useRef(activeId);
   activeIdRef.current = activeId;
   const conversationsRef = useRef<any[]>([]);
@@ -405,9 +448,35 @@ function AtendimentoPage() {
         },
         (event) => {
           const ev = event.new as any;
-          const isMessageCreated = ev?.event_type === "message_created";
+          const evType: string = ev?.event_type ?? "";
+          const isMessageCreated = evType === "message_created";
+          const isMessageDeleted = evType === "message_deleted";
           const isIncoming = isMessageCreated && ev?.message_type === "incoming";
           const evConvId: number | null = ev?.conversation_id ?? null;
+          const evMsgId: number | null = ev?.message_id ?? null;
+
+          // ── message_deleted: marcar stale no IndexedDB, não apagar ──────────
+          if (isMessageDeleted && evConvId && evMsgId && cacheUserIdRef.current && accountIdRef.current) {
+            const rtEnv = (import.meta.env.MODE || "production") as CacheEnv;
+            markMessageStale(
+              { env: rtEnv, userId: cacheUserIdRef.current, accountId: accountIdRef.current },
+              evConvId,
+              evMsgId,
+              "deleted_remotely"
+            ).then(() => {
+              // Notificar outras abas e, se for a conversa ativa, retirar da lista
+              if (lifecycleRef.current && accountIdRef.current) {
+                lifecycleRef.current.broadcast(
+                  { type: "CACHE_UPDATED", status: `msgs:${evConvId}` },
+                  accountIdRef.current
+                );
+              }
+              if (activeIdRef.current === evConvId) {
+                setMessages((prev: any[]) => prev.filter((m: any) => m.id !== evMsgId));
+              }
+            }).catch(() => {});
+            return; // não processar como message_created
+          }
 
           // Nova mensagem incoming limpa o "marcado como respondido"
           if (isIncoming && evConvId) {
@@ -428,7 +497,7 @@ function AtendimentoPage() {
             setConversations((prev) => {
               const updated = prev.map((c) => {
                 if (c.id !== evConvId) return c;
-                return {
+                const next = {
                   ...c,
                   last_activity_at: now,
                   unread_count: isIncoming && evConvId !== activeIdRef.current
@@ -436,45 +505,44 @@ function AtendimentoPage() {
                     : c.unread_count,
                   ...(optimisticLastMsg ? { last_message: optimisticLastMsg } : {}),
                 };
+                return next;
               });
-              return updated.sort((a, b) => (b.last_activity_at ?? 0) - (a.last_activity_at ?? 0));
+              return sortConversations(updated);
             });
           }
 
-          // Sidebar is updated optimistically from event data above — no Chatwoot fetch needed per event
-
-          // DEBUG — remove after confirming
-          console.log("[NOTIF DEBUG]", {
-            event_type: ev?.event_type,
-            message_type: ev?.message_type,
-            conversation_id: ev?.conversation_id,
-            content: ev?.content,
-            isMessageCreated,
-            isIncoming,
-            evConvId,
-            activeId: activeIdRef.current,
-            wouldNotify: isMessageCreated && isIncoming && evConvId !== activeIdRef.current,
-          });
-
-          // Notify for incoming messages in non-active conversations — always, regardless of focus
+          // ── Notificação com deduplicação ──────────────────────────────────────
+          // Mesmo evento repetido (Realtime bug) não emite som/push duas vezes.
           if (isMessageCreated && isIncoming && evConvId !== activeIdRef.current) {
-            if (soundEnabledRef.current && Date.now() - lastSentRef.current >= 3000) {
-              playNotificationSound();
+            const dedupKey = {
+              accountId: chatwootAccountId!,
+              eventType: evType,
+              messageId: evMsgId ?? `${evConvId}:${ev?.created_at ?? Date.now()}`,
+            };
+
+            if (shouldNotify(dedupKey)) {
+              if (soundEnabledRef.current && Date.now() - lastSentRef.current >= 3000) {
+                playNotificationSound();
+              }
+              const conv = evConvId ? conversationsRef.current.find((c) => c.id === evConvId) : null;
+              const senderName = conv?.meta?.sender?.name ?? "Novo contato";
+              sendBrowserNotification(senderName, ev.content ?? "Nova mensagem");
+              const id = ++pushNotifIdRef.current;
+              setPushNotifs((prev) => [...prev, { id, sender: senderName, preview: ev.content ?? "", convId: evConvId }]);
             }
-            const conv = evConvId ? conversationsRef.current.find((c) => c.id === evConvId) : null;
-            const senderName = conv?.meta?.sender?.name ?? "Novo contato";
-            sendBrowserNotification(senderName, ev.content ?? "Nova mensagem");
-            const id = ++pushNotifIdRef.current;
-            setPushNotifs((prev) => [...prev, { id, sender: senderName, preview: ev.content ?? "", convId: evConvId }]);
           }
 
           if (activeIdRef.current) {
-            // B08: capture ID before async call — activeIdRef may change during await
+            // B08: capture all identifying state before the async call
             const requestedConvId = activeIdRef.current;
+            const rtUserId = cacheUserIdRef.current;
+            const rtAccountId = accountIdRef.current;
             getChatwootMessages({ data: { conversationId: requestedConvId } })
               .then((result) => {
-                // Discard result if user switched conversations during the await
+                // B08 + scope guard: discard if conversation, user, or account changed
                 if (activeIdRef.current !== requestedConvId) return;
+                if (cacheUserIdRef.current !== rtUserId) return;
+                if (accountIdRef.current !== rtAccountId) return;
                 const newMsgs = result.msgs;
                 if (isMessageCreated && soundEnabledRef.current) {
                   const prevIds = new Set(prevMessagesRef.current.map((m: any) => m.id));
@@ -482,13 +550,19 @@ function AtendimentoPage() {
                   const hasNewIncoming = newMsgs.some(
                     (m: any) => !prevIds.has(m.id) && m.message_type === 0
                   );
-                  // Active conversation: only show visual notif when app is in background
                   if (hasNewIncoming && !recentlySentOwn && (document.hidden || document.visibilityState === "hidden")) {
-                    const conv = evConvId ? conversationsRef.current.find((c) => c.id === evConvId) : null;
-                    const senderName = conv?.meta?.sender?.name ?? "Nova mensagem";
-                    sendBrowserNotification(senderName, ev.content ?? "");
-                    const id = ++pushNotifIdRef.current;
-                    setPushNotifs((prev) => [...prev, { id, sender: senderName, preview: ev.content ?? "", convId: evConvId }]);
+                    const dedupKey = {
+                      accountId: chatwootAccountId!,
+                      eventType: evType,
+                      messageId: evMsgId ?? `${evConvId}:${Date.now()}`,
+                    };
+                    if (shouldNotify(dedupKey)) {
+                      const conv = evConvId ? conversationsRef.current.find((c) => c.id === evConvId) : null;
+                      const senderName = conv?.meta?.sender?.name ?? "Nova mensagem";
+                      sendBrowserNotification(senderName, ev.content ?? "");
+                      const id = ++pushNotifIdRef.current;
+                      setPushNotifs((prev) => [...prev, { id, sender: senderName, preview: ev.content ?? "", convId: evConvId }]);
+                    }
                   }
                 }
                 prevMessagesRef.current = newMsgs;
@@ -496,6 +570,15 @@ function AtendimentoPage() {
                 setConversations((prev) => prev.map((c) =>
                   c.id === requestedConvId ? { ...c, can_reply: result.can_reply } : c
                 ));
+                // Write updated messages to cache (Realtime path)
+                if (rtUserId && rtAccountId && rtAccountId > 0) {
+                  const rtEnv = (import.meta.env.MODE || "production") as CacheEnv;
+                  upsertMessages(
+                    { env: rtEnv, userId: rtUserId, accountId: rtAccountId },
+                    newMsgs,
+                    requestedConvId
+                  ).catch(() => {});
+                }
               })
               .catch(console.error);
           }
@@ -508,19 +591,92 @@ function AtendimentoPage() {
     return () => { supabase.removeChannel(channel); };
   }, [chatwootAccountId]);
 
-  // Fallback polling for sidebar — 5min interval, only to catch state not covered by webhook
-  // (conversation status, can_reply, new conversations not yet in cache)
+  // Cache lifecycle — created only when scope is fully resolved AND at least one cache flag is on.
+  // Guard: if both flags are disabled, IndexedDB must NOT open and BroadcastChannel must NOT start.
+  useEffect(() => {
+    if (!cacheUserId || !chatwootAccountId || chatwootAccountId <= 0) return;
+    const convCacheOn = isFeatureEnabledSync(FLAG_CONVERSATION_CACHE, cacheUserId);
+    const msgCacheOn  = isFeatureEnabledSync(FLAG_MESSAGE_CACHE, cacheUserId);
+    if (!convCacheOn && !msgCacheOn) return; // both disabled — no IndexedDB, no BroadcastChannel
+    const env = (import.meta.env.MODE || "production") as CacheEnv;
+
+    const lc = createCacheLifecycle({
+      env,
+      userId: cacheUserId,
+      accountId: chatwootAccountId,
+      handlers: {
+        onSyncFinished: async () => {
+          // Another tab finished syncing conversations — reload from IndexedDB
+          try {
+            const rows = await getConversationsFromCache(
+              { env, userId: cacheUserId, accountId: chatwootAccountId },
+              tabRef.current
+            );
+            if (rows.length > 0) {
+              setConversations(sortConversations(rows.map((r) => r.data as any)));
+            }
+          } catch {}
+        },
+        onCacheUpdated: async ({ status }) => {
+          // msg cache written by another tab — reload only if it's the active conversation
+          if (!status.startsWith("msgs:")) return;
+          const convId = parseInt(status.slice(5), 10);
+          if (!Number.isFinite(convId) || convId <= 0) return;
+          if (activeIdRef.current !== convId) return; // not the active conversation
+          try {
+            const rows = await getActiveMessagesFromCache(
+              { env, userId: cacheUserId, accountId: chatwootAccountId },
+              convId
+            );
+            if (rows.length > 0 && activeIdRef.current === convId) {
+              setMessages(rows.map((r) => r.data as any));
+            }
+          } catch {}
+        },
+        onLogout: () => {
+          dbOnLogout(env, cacheUserId);
+          invalidateFlagsCache();
+          clearAllNotifState();
+        },
+      },
+    });
+    lifecycleRef.current = lc;
+    return () => {
+      lc.close();
+      lifecycleRef.current = null;
+    };
+  }, [cacheUserId, chatwootAccountId]);
+
+  // Fallback polling for sidebar — 5min interval, catches state not covered by webhook.
+  // Guard: captures tab/account/userId/generation at poll time; discards stale responses.
   useEffect(() => {
     const sidebarPoll = setInterval(() => {
-      getChatwootConversations({ data: { status: tabRef.current } })
+      // R3: snapshot all identifying state at the moment the poll fires
+      const pollTab = tabRef.current;
+      const pollUserId = cacheUserIdRef.current;
+      const pollAccountId = accountIdRef.current;
+      const pollGeneration = loadGenerationRef.current;
+
+      // Skip poll if scope is not yet resolved (R1)
+      if (!pollUserId || !pollAccountId || pollAccountId <= 0) return;
+
+      getChatwootConversations({ data: { status: pollTab } })
         .then((convs) => {
-          const normalized = convs.map((c: any) => ({
+          // R3: discard response if any identifying state changed during the request
+          if (
+            pollGeneration !== loadGenerationRef.current ||
+            pollTab !== tabRef.current ||
+            pollAccountId !== accountIdRef.current ||
+            pollUserId !== cacheUserIdRef.current
+          ) return;
+
+          const normalized = sortConversations(convs.map((c: any) => ({
             ...c,
             last_message: c.last_non_activity_message ?? c.last_message ?? null,
-          }));
+          })));
           setConversations(normalized);
           try {
-            localStorage.setItem(`berry_convs_${tabRef.current}`, JSON.stringify({ convs: normalized, ts: Date.now() }));
+            localStorage.setItem(`berry_convs_${pollTab}`, JSON.stringify({ convs: normalized, ts: Date.now() }));
           } catch {}
         })
         .catch(() => {});
@@ -532,6 +688,7 @@ function AtendimentoPage() {
     (async () => {
       const { data: u } = await supabase.auth.getUser();
       if (!u.user) return;
+      setCacheUserId(u.user.id); // needed to scope IndexedDB
       const { data } = await supabase.from("agents").select("name, role, email, hubspot_owner_id").eq("id", u.user.id).maybeSingle();
       if (data?.name) setAgentName(data.name);
       const email = u.user.email ?? (data as any)?.email ?? "";
@@ -551,8 +708,11 @@ function AtendimentoPage() {
       }
     })();
     // Carrega chatwoot_account_id para filtrar subscription Realtime por tenant (B06)
-    supabase.from("settings").select("chatwoot_account_id").eq("id", 1).maybeSingle()
-      .then(({ data }) => { if (data?.chatwoot_account_id) setChatwootAccountId(data.chatwoot_account_id); })
+    Promise.resolve(supabase.from("settings").select("chatwoot_account_id").eq("id", 1).maybeSingle())
+      .then(({ data }) => {
+        const id = data?.chatwoot_account_id ? Number(data.chatwoot_account_id) : null;
+        if (id) setChatwootAccountId(id);
+      })
       .catch(console.error);
 
     getHubSpotVisibleFields()
@@ -683,20 +843,33 @@ function AtendimentoPage() {
     return Array.from(map.values()).sort((a, b) => {
       const pa = convPriority(a); const pb = convPriority(b);
       if (pa !== pb) return pa - pb;
-      return (b.last_activity_at ?? 0) - (a.last_activity_at ?? 0);
+      // R4: deterministic tiebreaker — id DESC when last_activity_at is equal
+      const byActivity = (b.last_activity_at ?? 0) - (a.last_activity_at ?? 0);
+      if (byActivity !== 0) return byActivity;
+      return (b.id ?? 0) - (a.id ?? 0);
     });
   }, [displayedConversations]);
 
   useEffect(() => {
+    // R1: do not sync until scope is fully resolved — no sentinels, no junk DBs
+    if (!cacheUserId || !chatwootAccountId || chatwootAccountId <= 0) {
+      setLoadingConvs(false);
+      return;
+    }
+
     const cacheKey = `berry_convs_${tab}`;
-    // Show cached conversations immediately to avoid blank sidebar on load
+    const generation = ++loadGenerationRef.current;
+    const env = (import.meta.env.MODE || "production") as CacheEnv;
+    const convCacheEnabled = isFeatureEnabledSync(FLAG_CONVERSATION_CACHE, cacheUserId);
+
+    // localStorage fallback — shown instantly while IndexedDB / network loads
     try {
       const cached = localStorage.getItem(cacheKey);
       if (cached) {
         const { convs: cachedConvs, ts } = JSON.parse(cached);
         if (Date.now() - ts < 5 * 60_000 && Array.isArray(cachedConvs)) {
           setConversations(cachedConvs);
-          setOwnerCacheReady(true); // cached data is good enough to show immediately
+          setOwnerCacheReady(true);
         }
       }
     } catch {}
@@ -708,11 +881,13 @@ function AtendimentoPage() {
     setMessages([]);
     setOwnerCacheReady(false);
 
-    let cancelled = false;
+    const controller = new AbortController();
     const allNormalized: any[] = [];
+    let firstPageDone = false;
 
     const afterLoad = (normalized: any[]) => {
-      // Persist fresh conversations to localStorage
+      if (generation !== loadGenerationRef.current) return;
+      // Persist fresh conversations to localStorage (read-only fallback path)
       try { localStorage.setItem(cacheKey, JSON.stringify({ convs: normalized, ts: Date.now() })); } catch {}
       // Batch-load owner cache
       const phones = [...new Set(
@@ -721,18 +896,20 @@ function AtendimentoPage() {
       if (phones.length) {
         getContactOwnersBatch({ data: { phones } })
           .then((rows) => {
-            const cached = new Set(rows.map((r) => r.phone));
+            if (generation !== loadGenerationRef.current) return;
+            const cachedSet = new Set(rows.map((r) => r.phone));
             setOwnerCache((prev) => {
               const next = { ...prev };
               for (const r of rows) next[r.phone] = r.hubspot_owner_id;
               return next;
             });
             setOwnerCacheReady(true);
-            const uncached = phones.filter((p) => !cached.has(p));
+            const uncached = phones.filter((p) => !cachedSet.has(p));
             if (uncached.length) {
               const runPreload = async () => {
                 const collected: Record<string, string | null> = {};
                 for (const phone of uncached) {
+                  if (generation !== loadGenerationRef.current) return;
                   try {
                     const contact = await getHubSpotContactByPhone({
                       data: { phone, properties: ["hubspot_owner_id"] },
@@ -743,6 +920,7 @@ function AtendimentoPage() {
                     collected[phone] = null;
                   }
                 }
+                if (generation !== loadGenerationRef.current) return;
                 setOwnerCache((prev) => ({ ...prev, ...collected }));
                 for (const [phone, ownerId] of Object.entries(collected)) {
                   upsertContactOwnerCache({ data: { phone, hubspot_owner_id: ownerId } }).catch(console.error);
@@ -751,7 +929,7 @@ function AtendimentoPage() {
               runPreload();
             }
           })
-          .catch(() => setOwnerCacheReady(true));
+          .catch(() => { if (generation === loadGenerationRef.current) setOwnerCacheReady(true); });
       } else {
         setOwnerCacheReady(true);
       }
@@ -767,6 +945,7 @@ function AtendimentoPage() {
         } else {
           getChatwootConversationById({ data: { conversationId: pending } })
             .then((conv: any) => {
+              if (generation !== loadGenerationRef.current) return;
               const convStatus: Tab = conv.status ?? "open";
               setConversations((prev) => {
                 if (prev.some((c) => c.id === conv.id)) return prev;
@@ -786,62 +965,94 @@ function AtendimentoPage() {
       }
     };
 
-    (async () => {
-      try {
-        let page = 1;
-        let total = 0;
-        let loaded = 0;
-        let firstPageDone = false;
-
-        while (true) {
-          if (cancelled) return;
-          const { convs: batch, total: t } = await getChatwootConversationsPage({
-            data: { status: tab, page },
-          });
-          if (cancelled) return;
-
-          if (page === 1) total = t;
-
+    if (!convCacheEnabled) {
+      // Conversation cache flag is off — fetch directly without IndexedDB
+      getChatwootConversationsPage({ data: { status: tab, page: 1 } })
+        .then(({ convs: batch, total: _t }) => {
+          if (generation !== loadGenerationRef.current) return;
           const norm = batch.map((c: any) => ({
             ...c,
             last_message: c.last_non_activity_message ?? c.last_message ?? null,
           }));
-          allNormalized.push(...norm);
-          loaded += batch.length;
+          setConversations(sortConversations(norm));
+          afterLoad(norm);
+          setLoadProgress(100);
+          setTimeout(() => setLoadProgress(0), 400);
+        })
+        .catch(console.error)
+        .finally(() => { if (generation === loadGenerationRef.current) setLoadingConvs(false); });
+      return () => { controller.abort(); };
+    }
 
-          // Merge with existing conversations (from cache) to avoid flicker
-          setConversations((prev) => {
+    syncConversations({
+      scope: { env, userId: cacheUserId, accountId: chatwootAccountId },
+      status: tab,
+      lifecycle: lifecycleRef.current,
+      // R6: isStillCurrent checked immediately before the DB write transaction
+      isStillCurrent: () =>
+        generation === loadGenerationRef.current && !controller.signal.aborted,
+      fetchPage: async (page, signal) => {
+        const { convs: batch, total: t } = await getChatwootConversationsPage({
+          data: { status: tab, page },
+        });
+        if (signal.aborted) return { convs: [], total: 0 };
+        const norm = batch.map((c: any) => ({
+          ...c,
+          last_message: c.last_non_activity_message ?? c.last_message ?? null,
+        }));
+        return { convs: norm, total: t };
+      },
+      signal: controller.signal,
+      generation,
+      generationRef: loadGenerationRef,
+      callbacks: {
+        onCacheLoaded: (cached) => {
+          if (generation !== loadGenerationRef.current) return;
+          if (cached.length > 0) {
+            // R4: sort by last_activity_at DESC, id DESC
+            setConversations(sortConversations(cached as any[]));
+            setLoadingConvs(false);
+            firstPageDone = true;
+          }
+        },
+        onPageLoaded: (all, progress) => {
+          if (generation !== loadGenerationRef.current) return;
+          allNormalized.length = 0;
+          allNormalized.push(...(all as any[]));
+          // R4: deduplicate + sort deterministically
+          setConversations(() => {
             const byId = new Map<number, any>();
-            for (const c of prev) byId.set(c.id, c);
-            for (const c of allNormalized) byId.set(c.id, c);
-            return Array.from(byId.values()).sort(
-              (a, b) => (b.last_activity_at ?? 0) - (a.last_activity_at ?? 0)
-            );
+            for (const c of all as any[]) byId.set((c as any).id, c);
+            return sortConversations(Array.from(byId.values()));
           });
-
-          const progress = total > 0 ? Math.round((loaded / total) * 100) : 100;
-          setLoadProgress(Math.min(progress, 99));
-
+          setLoadProgress(progress);
           if (!firstPageDone) {
             setLoadingConvs(false);
             firstPageDone = true;
           }
+        },
+        onComplete: (all, _complete) => {
+          if (generation !== loadGenerationRef.current) return;
+          setLoadProgress(100);
+          afterLoad(all as any[]);
+          setTimeout(() => setLoadProgress(0), 400);
+          setLoadingConvs(false);
 
-          if (batch.length < 25) break;
-          page++;
-        }
+          // Broadcast so other tabs reload from IndexedDB
+          if (cacheUserId && chatwootAccountId && lifecycleRef.current) {
+            lifecycleRef.current.broadcast(
+              { type: "SYNC_FINISHED", status: tab, fetchedAt: Date.now() },
+              chatwootAccountId
+            );
+          }
+        },
+      },
+    }).catch(console.error).finally(() => {
+      if (generation === loadGenerationRef.current) setLoadingConvs(false);
+    });
 
-        if (cancelled) return;
-        setLoadProgress(100);
-        afterLoad(allNormalized);
-        setTimeout(() => setLoadProgress(0), 400);
-      } catch (e) {
-        console.error(e);
-      } finally {
-        if (!cancelled) setLoadingConvs(false);
-      }
-    })();
-  }, [tab]);
+    return () => { controller.abort(); };
+  }, [tab, cacheUserId, chatwootAccountId]);
 
   useEffect(() => {
     // Clear draft and template state when switching conversations
@@ -856,42 +1067,135 @@ function AtendimentoPage() {
     const activeConv = conversations.find((c) => c.id === activeId) ?? searchAllConvs.find((c) => c.id === activeId);
     const phone = activePhone ?? normalizePhone(activeConv?.meta?.sender?.phone_number);
 
+    // B08: capture all identifying state before any await
+    const requestedConvId = activeId;
+    const requestedUserId = cacheUserIdRef.current;
+    const requestedAccountId = accountIdRef.current;
+    const msgEnv = (import.meta.env.MODE || "production") as CacheEnv;
+
+    // AbortController scoped to this conversation open
+    const msgCtrl = new AbortController();
+
+    const isStillCurrent = () =>
+      activeIdRef.current === requestedConvId &&
+      cacheUserIdRef.current === requestedUserId &&
+      accountIdRef.current === requestedAccountId &&
+      !msgCtrl.signal.aborted;
+
+    const msgScope =
+      requestedUserId && requestedAccountId && requestedAccountId > 0
+        ? { env: msgEnv, userId: requestedUserId, accountId: requestedAccountId }
+        : null;
+
     setLoadingMsgs(true);
 
-    const applyMsgResult = (result: { msgs: any[]; can_reply: boolean }, convId: number) => {
-      setMessages(result.msgs);
-      setConversations((prev) => prev.map((c) =>
-        c.id === convId ? { ...c, can_reply: result.can_reply } : c
-      ));
-    };
+    // ── Message sync: cache-first (somente se flag habilitada) ───────────
+    const msgCacheEnabled = msgScope && requestedUserId
+      ? isFeatureEnabledSync(FLAG_MESSAGE_CACHE, requestedUserId)
+      : false;
 
-    // Load current conversation messages (sync to history) + full contact history in parallel
-    Promise.all([
-      getChatwootMessages({ data: { conversationId: activeId, contactPhone: phone || undefined } }),
-      phone ? getContactHistory({ data: { contactPhone: phone } }) : Promise.resolve([]),
-    ])
-      .then(([result, history]) => {
-        applyMsgResult(result, activeId);
-        setHistoryMessages(history);
-        // If history is empty, trigger a backfill in the background
-        if (phone && history.length === 0) {
-          setBackfilling(true);
-          backfillContactHistory({ data: { contactPhone: phone } })
-            .then(() => getContactHistory({ data: { contactPhone: phone } }))
-            .then(setHistoryMessages)
-            .catch(() => {})
-            .finally(() => setBackfilling(false));
-        }
+    if (msgScope && msgCacheEnabled) {
+      syncMessages({
+        scope: msgScope,
+        conversationId: requestedConvId,
+        fetchMessages: () =>
+          getChatwootMessages({
+            data: { conversationId: requestedConvId, contactPhone: phone || undefined },
+          }),
+        signal: msgCtrl.signal,
+        isStillCurrent,
+        callbacks: {
+          onCacheLoaded: (cachedMsgs) => {
+            if (!isStillCurrent()) return;
+            setMessages(cachedMsgs as any[]);
+            setLoadingMsgs(false); // cache hit: stop spinner immediately
+          },
+          onComplete: (msgs, canReply) => {
+            if (!isStillCurrent()) return;
+            setMessages(msgs as any[]);
+            setConversations((prev) =>
+              prev.map((c) =>
+                c.id === requestedConvId ? { ...c, can_reply: canReply } : c
+              )
+            );
+            setLoadingMsgs(false);
+            // Broadcast to other tabs so they can reload this conversation
+            if (lifecycleRef.current && requestedAccountId) {
+              lifecycleRef.current.broadcast(
+                { type: "CACHE_UPDATED", status: `msgs:${requestedConvId}` },
+                requestedAccountId
+              );
+            }
+          },
+        },
       })
-      .catch(console.error)
-      .finally(() => setLoadingMsgs(false));
-
-    // Poll every 5s to pick up delivery status updates from WhatsApp webhooks
-    const poll = setInterval(() => {
-      getChatwootMessages({ data: { conversationId: activeId, contactPhone: phone || undefined } })
+        .catch(console.error)
+        .finally(() => {
+          // Guarantee spinner stops even on unexpected error
+          if (isStillCurrent()) setLoadingMsgs(false);
+        });
+    } else {
+      // Scope not yet resolved (auth loading) — direct API fallback, no cache
+      getChatwootMessages({
+        data: { conversationId: requestedConvId, contactPhone: phone || undefined },
+      })
         .then((result) => {
-          applyMsgResult(result, activeId);
-          if (phone) getContactHistory({ data: { contactPhone: phone } }).then(setHistoryMessages).catch(() => {});
+          if (activeIdRef.current !== requestedConvId) return; // B08
+          setMessages(result.msgs);
+          setConversations((prev) =>
+            prev.map((c) =>
+              c.id === requestedConvId ? { ...c, can_reply: result.can_reply } : c
+            )
+          );
+        })
+        .catch(console.error)
+        .finally(() => {
+          if (activeIdRef.current === requestedConvId) setLoadingMsgs(false);
+        });
+    }
+
+    // ── Contact history (parallel — independent of message sync) ─────────
+    if (phone) {
+      getContactHistory({ data: { contactPhone: phone } })
+        .then((history) => {
+          if (activeIdRef.current !== requestedConvId) return; // B08
+          setHistoryMessages(history);
+          if (history.length === 0) {
+            setBackfilling(true);
+            backfillContactHistory({ data: { contactPhone: phone } })
+              .then(() => getContactHistory({ data: { contactPhone: phone } }))
+              .then((h) => {
+                if (activeIdRef.current === requestedConvId) setHistoryMessages(h);
+              })
+              .catch(() => {})
+              .finally(() => setBackfilling(false));
+          }
+        })
+        .catch(console.error);
+    }
+
+    // ── Poll every 10s for delivery status updates ────────────────────────
+    // Captures all identifying state at start — discards stale responses.
+    const poll = setInterval(() => {
+      if (activeIdRef.current !== requestedConvId) { clearInterval(poll); return; }
+      if (cacheUserIdRef.current !== requestedUserId) { clearInterval(poll); return; }
+      if (accountIdRef.current !== requestedAccountId) { clearInterval(poll); return; }
+      getChatwootMessages({ data: { conversationId: requestedConvId } })
+        .then((result) => {
+          // B08 + scope guard on response
+          if (activeIdRef.current !== requestedConvId) return;
+          if (cacheUserIdRef.current !== requestedUserId) return;
+          if (accountIdRef.current !== requestedAccountId) return;
+          setMessages(result.msgs);
+          setConversations((prev) =>
+            prev.map((c) =>
+              c.id === requestedConvId ? { ...c, can_reply: result.can_reply } : c
+            )
+          );
+          // Write updated delivery statuses to cache
+          if (msgScope) {
+            upsertMessages(msgScope, result.msgs, requestedConvId).catch(() => {});
+          }
         })
         .catch(() => {});
     }, 10_000);
@@ -938,7 +1242,7 @@ function AtendimentoPage() {
         .catch(console.error);
     }, 5 * 60_000) : null;
 
-    return () => { clearInterval(poll); if (hubPoll) clearInterval(hubPoll); };
+    return () => { msgCtrl.abort(); clearInterval(poll); if (hubPoll) clearInterval(hubPoll); };
   }, [activeId]);
 
   // Total unread across all visible conversations — drives document.title badge

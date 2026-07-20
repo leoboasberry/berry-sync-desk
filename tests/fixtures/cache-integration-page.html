@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <title>Berry Cache Integration Test Page</title>
+</head>
+<body>
+<script type="module">
+/**
+ * Minimal in-browser test harness for IndexedDB cache modules.
+ * Exposes window.__cache with helpers used by Playwright tests.
+ *
+ * Uses fake ESM imports via importmap — modules are bundled by Vite during
+ * the test run, or we use CDN-hosted Dexie + local modules.
+ *
+ * Since we can't import src/ modules directly in a static fixture, this page
+ * reimplements the minimal cache contract in pure browser JavaScript.
+ * This tests the IndexedDB layer in a real browser without the full React app.
+ */
+
+// ── Minimal IndexedDB helpers ─────────────────────────────────────────────
+
+const DB_VERSION = 1;
+const TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+function openDb(env, userId) {
+  return new Promise((resolve, reject) => {
+    const name = `berry-sync:${env}:${userId}`;
+    const req = indexedDB.open(name, DB_VERSION);
+    req.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains("conversations")) {
+        db.createObjectStore("conversations", { keyPath: ["accountId", "id"] });
+      }
+      if (!db.objectStoreNames.contains("messages")) {
+        db.createObjectStore("messages", { keyPath: ["accountId", "conversationId", "id"] });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function putMessage(db, accountId, conversationId, msg, cachedAt) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("messages", "readwrite");
+    const store = tx.objectStore("messages");
+    const req = store.put({
+      accountId,
+      conversationId,
+      id: msg.id,
+      created_at: msg.created_at ?? 0,
+      data: msg,
+      cachedAt: cachedAt ?? Date.now(),
+      stale: false,
+      lastSeenAt: Date.now(),
+    });
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function getMessages(db, accountId, conversationId) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("messages", "readonly");
+    const store = tx.objectStore("messages");
+    const req = store.getAll();
+    req.onsuccess = () => {
+      const rows = req.result.filter(
+        r => r.accountId === accountId && r.conversationId === conversationId &&
+             !r.stale && (Date.now() - r.cachedAt <= TTL_MS)
+      );
+      resolve(rows);
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function clearAll(db) {
+  return new Promise((resolve) => {
+    const tx = db.transaction(["messages", "conversations"], "readwrite");
+    tx.objectStore("messages").clear();
+    tx.objectStore("conversations").clear();
+    tx.oncomplete = resolve;
+  });
+}
+
+// ── Message merge (field-by-field) ───────────────────────────────────────
+
+const STATUS_RANK = { failed: 4, read: 3, delivered: 2, sent: 1 };
+
+function bestStatus(a, b) {
+  const ra = STATUS_RANK[a ?? ""] ?? 0;
+  const rb = STATUS_RANK[b ?? ""] ?? 0;
+  return rb > ra ? b : (ra > rb ? a : (a ?? b));
+}
+
+function mergeAttachments(ea, ia) {
+  const aea = Array.isArray(ea) ? ea : null;
+  const aia = Array.isArray(ia) ? ia : null;
+  if (!aea && !aia) return ea ?? ia;
+  if (!aea) return aia;
+  if (!aia) return aea;
+  return aia.length >= aea.length ? aia : aea;
+}
+
+function mergeMsg(existing, incoming) {
+  if (!existing) return incoming;
+  return {
+    ...existing,
+    id: incoming.id,
+    content: (incoming.content !== null && incoming.content !== undefined && incoming.content !== "")
+      ? incoming.content : existing.content,
+    attachments: mergeAttachments(existing.attachments, incoming.attachments),
+    sender: incoming.sender != null ? incoming.sender : existing.sender,
+    status: bestStatus(existing.status, incoming.status),
+    private: existing.private === true ? true : (incoming.private ?? existing.private),
+    created_at: (typeof existing.created_at === "number" && typeof incoming.created_at === "number")
+      ? Math.min(existing.created_at, incoming.created_at)
+      : (existing.created_at ?? incoming.created_at),
+    updated_at: Math.max(existing.updated_at ?? 0, incoming.updated_at ?? 0) || undefined,
+  };
+}
+
+// ── Exposed API ───────────────────────────────────────────────────────────
+
+const dbs = new Map();
+
+async function getDb(env, userId) {
+  const key = `${env}:${userId}`;
+  if (!dbs.has(key)) dbs.set(key, await openDb(env, userId));
+  return dbs.get(key);
+}
+
+window.__cache = {
+  // Write messages for a conversation
+  async writeMessages(env, userId, accountId, conversationId, msgs, cachedAt) {
+    const db = await getDb(env, userId);
+    for (const m of msgs) {
+      const existing = await getMsg(db, accountId, conversationId, m.id);
+      const merged = mergeMsg(existing?.data ?? null, m);
+      await putMessage(db, accountId, conversationId, merged, cachedAt);
+    }
+    return msgs.length;
+  },
+
+  // Read active (non-stale, non-expired) messages
+  async readMessages(env, userId, accountId, conversationId) {
+    const db = await getDb(env, userId);
+    return getMessages(db, accountId, conversationId);
+  },
+
+  // Mark a message as stale (soft-delete)
+  async markStale(env, userId, accountId, conversationId, messageId, reason) {
+    const db = await getDb(env, userId);
+    const existing = await getMsg(db, accountId, conversationId, messageId);
+    if (!existing) return false;
+    return new Promise((res) => {
+      const tx = db.transaction("messages", "readwrite");
+      tx.objectStore("messages").put({
+        ...existing,
+        stale: true,
+        staleReason: reason ?? "unknown",
+        deletedAt: Date.now(),
+      });
+      tx.oncomplete = () => res(true);
+    });
+  },
+
+  // Clear all for this scope
+  async clear(env, userId) {
+    const db = await getDb(env, userId);
+    return clearAll(db);
+  },
+
+  // Check if message exists (even if stale)
+  async rawGet(env, userId, accountId, conversationId, id) {
+    const db = await getDb(env, userId);
+    return getMsg(db, accountId, conversationId, id);
+  },
+
+  // Simulate network fetch then cache write
+  async syncWithNetwork(env, userId, accountId, conversationId, networkMsgs, canReply) {
+    const db = await getDb(env, userId);
+    const results = { cacheHit: false, cachedCount: 0, networkCount: networkMsgs.length };
+    const existing = await getMessages(db, accountId, conversationId);
+    results.cacheHit = existing.length > 0;
+    results.cachedCount = existing.length;
+    const existingById = new Map(existing.map(r => [r.id, r.data]));
+    for (const m of networkMsgs) {
+      const merged = mergeMsg(existingById.get(m.id) ?? null, m);
+      await putMessage(db, accountId, conversationId, merged);
+    }
+    return { ...results, canReply };
+  },
+
+  // Merge rules test
+  mergeMsg,
+  bestStatus,
+  mergeAttachments,
+
+  // Timing helper
+  now: () => Date.now(),
+};
+
+async function getMsg(db, accountId, conversationId, id) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("messages", "readonly");
+    const req = tx.objectStore("messages").get([accountId, conversationId, id]);
+    req.onsuccess = () => resolve(req.result ?? null);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+// Signal to Playwright that the page is ready
+window.__cacheReady = true;
+console.log("[cache-integration-page] ready");
+</script>
+</body>
+</html>

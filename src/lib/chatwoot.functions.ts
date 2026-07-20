@@ -833,3 +833,80 @@ export const updateChatwootConversationStatus = createServerFn({ method: "POST" 
     if (!res.ok) throw new Error(`Chatwoot error: ${res.status}`);
     return await res.json();
   });
+
+// ── Settings server functions (service_role only — browser never writes directly) ──
+
+export const getSettingsPublic = createServerFn({ method: "POST" })
+  .handler(async () => {
+    // Returns only non-sensitive fields. Tokens are NOT returned to the browser.
+    const { data } = await supabaseAdmin
+      .from("settings")
+      .select("chatwoot_url, chatwoot_account_id, updated_at")
+      .eq("id", 1)
+      .maybeSingle();
+    return data ?? null;
+  });
+
+export const getSettingsConfigured = createServerFn({ method: "POST" })
+  .handler(async () => {
+    // Returns a boolean pair — tells UI if credentials exist without exposing them.
+    const { data } = await supabaseAdmin
+      .from("settings")
+      .select("chatwoot_token, hubspot_token")
+      .eq("id", 1)
+      .maybeSingle();
+    return {
+      chatwootConfigured: Boolean(data?.chatwoot_token),
+      hubspotConfigured: Boolean(data?.hubspot_token),
+    };
+  });
+
+export const upsertSettings = createServerFn({ method: "POST" })
+  .inputValidator((data: {
+    chatwoot_url?: string;
+    chatwoot_account_id?: string;
+    chatwoot_token?: string;
+    hubspot_token?: string;
+  }) => data)
+  .handler(async ({ data }) => {
+    // Runs with service_role — bypasses RLS safely on the server side.
+    // After migration 20260715000003, authenticated users cannot write settings directly.
+    const { error } = await supabaseAdmin
+      .from("settings")
+      .upsert({
+        id: 1,
+        ...data,
+        updated_at: new Date().toISOString(),
+      });
+    if (error) throw new Error(error.message);
+    return { ok: true };
+  });
+
+// ── Agent account management (service_role only) ──────────────────────────────
+
+export const linkAgentToAccount = createServerFn({ method: "POST" })
+  .inputValidator((data: { userId: string; chatwootAccountId: number; role?: "agent" | "admin" }) => data)
+  .handler(async ({ data }) => {
+    const { error } = await (supabaseAdmin as any)
+      .from("agent_accounts")
+      .upsert({
+        user_id: data.userId,
+        chatwoot_account_id: data.chatwootAccountId,
+        role: data.role ?? "agent",
+      }, { onConflict: "user_id,chatwoot_account_id" });
+    if (error) throw new Error(error.message);
+    return { ok: true };
+  });
+
+export const unlinkAgentFromAccount = createServerFn({ method: "POST" })
+  .inputValidator((data: { userId: string; chatwootAccountId: number }) => data)
+  .handler(async ({ data }) => {
+    const { error } = await (supabaseAdmin as any)
+      .from("agent_accounts")
+      .delete()
+      .eq("user_id", data.userId)
+      .eq("chatwoot_account_id", data.chatwootAccountId);
+    if (error) throw new Error(error.message);
+    return { ok: true };
+  });
+

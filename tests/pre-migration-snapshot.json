@@ -1,0 +1,37 @@
+{
+  "timestamp": "2026-07-16T17:13:23Z",
+  "row_counts": {
+    "chatwoot_events": 2484,
+    "settings": 1,
+    "agents": 6,
+    "id_max_chatwoot_events": 2484
+  },
+  "columns_chatwoot_events": [
+    "id", "event_type", "account_id", "created_at",
+    "conversation_id", "message_type", "content", "sender_name"
+  ],
+  "columns_ABSENT": ["dedup_key", "message_id", "payload_hash"],
+  "tables_ABSENT": ["feature_flags"],
+  "test_events_preserved": [
+    {"id": 2481, "event_type": "test_ping", "account_id": 1},
+    {"id": 2482, "event_type": "message_created", "account_id": 1},
+    {"id": 2483, "event_type": "message_created", "account_id": 1},
+    {"id": 2484, "event_type": "ping", "account_id": null}
+  ],
+  "rls_settings": {
+    "anon_PATCH": "401 (blocked)",
+    "anon_SELECT": "401 (blocked - RLS sem policy para anon)",
+    "note": "settings protegida — anon não acessa"
+  },
+  "public_tables": [
+    "hubspot_cache", "call_logs", "contact_owner_cache",
+    "chatwoot_events", "settings", "messages_history", "agents"
+  ],
+  "migrations_pending": [
+    "20260715000001_chatwoot_events_dedup.sql",
+    "20260715000002_chatwoot_events_dedup_v2.sql",
+    "20260715000003_settings_write_protection.sql",
+    "20260715000004_agent_accounts_isolation.sql",
+    "20260716000000_feature_flags_and_dedup_v2.sql"
+  ]
+}

@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <title>Berry Cache — Performance (Chromium real)</title>
+</head>
+<body>
+<pre id="log"></pre>
+<script>
+/**
+ * Medições de performance no Chromium real com IndexedDB real.
+ * Sem React, sem rede real — apenas IndexedDB do browser + operações de merge em memória.
+ *
+ * Resultados gravados em window.__perfResults para Playwright coletar.
+ */
+
+const DB_VERSION = 1;
+const TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+function log(msg) {
+  document.getElementById("log").textContent += msg + "\n";
+}
+
+function openDb(name) {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(name, DB_VERSION);
+    req.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains("messages")) {
+        db.createObjectStore("messages", { keyPath: ["accountId", "conversationId", "id"] });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function writeMessages(db, accountId, conversationId, msgs) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("messages", "readwrite");
+    const store = tx.objectStore("messages");
+    const now = Date.now();
+    for (const m of msgs) {
+      store.put({ accountId, conversationId, id: m.id, created_at: m.created_at ?? 0, data: m, cachedAt: now, stale: false });
+    }
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function readMessages(db, accountId, conversationId) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("messages", "readonly");
+    const req = tx.objectStore("messages").getAll();
+    req.onsuccess = () => resolve(req.result.filter(r =>
+      r.accountId === accountId && r.conversationId === conversationId &&
+      !r.stale && (Date.now() - r.cachedAt <= TTL_MS)
+    ));
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function makeMsg(id, convId) {
+  return { id, content: `Mensagem ${id} da conversa ${convId} com conteúdo representativo para medir overhead serialização IndexedDB real`, created_at: id, sender: { id: 10 }, status: "delivered", attachments: [], private: false, message_type: 1, content_type: "text", conversation_id: convId, updated_at: id + 1 };
+}
+
+function makeMsgs(count, convId = 1) {
+  return Array.from({ length: count }, (_, i) => makeMsg(i + 1, convId));
+}
+
+function median(arr) {
+  const s = [...arr].sort((a, b) => a - b);
+  return s[Math.floor(s.length / 2)];
+}
+
+async function measure(label, fn, runs = 3) {
+  const times = [];
+  for (let i = 0; i < runs; i++) {
+    const t0 = performance.now();
+    await fn();
+    times.push(+(performance.now() - t0).toFixed(2));
+  }
+  const med = median(times);
+  const entry = { label, runs: times, median: med };
+  log(`${label}: ${times.join("ms | ")}ms → mediana ${med}ms`);
+  return entry;
+}
+
+async function runPerf() {
+  const results = [];
+  let dbN = 0;
+  const getDb = (n) => openDb(`berry-perf-${n}-${Date.now()}`);
+
+  log("=== Performance — IndexedDB real (Chromium) ===\n");
+
+  // P-1: cache miss
+  log("P-1: cache miss — conversa vazia");
+  const db1 = await getDb(++dbN);
+  results.push(await measure("P-1 getMessages (vazia)", () => readMessages(db1, 1, 1)));
+
+  // P-2: cache hit 10 msgs
+  log("\nP-2: cache hit — 10 msgs");
+  const db2 = await getDb(++dbN);
+  await writeMessages(db2, 1, 1, makeMsgs(10));
+  results.push(await measure("P-2 getMessages (10)", () => readMessages(db2, 1, 1)));
+
+  // P-3: write 10 msgs
+  log("\nP-3: write 10 msgs novas");
+  results.push(await measure("P-3 writeMessages (10)", async () => {
+    const db = await getDb(++dbN);
+    await writeMessages(db, 1, 1, makeMsgs(10));
+  }));
+
+  // P-4: write 50 msgs
+  log("\nP-4: write 50 msgs");
+  results.push(await measure("P-4 writeMessages (50)", async () => {
+    const db = await getDb(++dbN);
+    await writeMessages(db, 1, 1, makeMsgs(50));
+  }));
+
+  // P-5: write 200 msgs
+  log("\nP-5: write 200 msgs");
+  results.push(await measure("P-5 writeMessages (200)", async () => {
+    const db = await getDb(++dbN);
+    await writeMessages(db, 1, 1, makeMsgs(200));
+  }));
+
+  // P-6: write 1000 msgs
+  log("\nP-6: write 1.000 msgs");
+  results.push(await measure("P-6 writeMessages (1000)", async () => {
+    const db = await getDb(++dbN);
+    await writeMessages(db, 1, 1, makeMsgs(1000));
+  }));
+
+  // P-7: read 50 msgs
+  log("\nP-7: read 50 msgs cacheadas");
+  const db7 = await getDb(++dbN);
+  await writeMessages(db7, 1, 1, makeMsgs(50));
+  results.push(await measure("P-7 getMessages (50)", () => readMessages(db7, 1, 1)));
+
+  // P-8: read 200 msgs
+  log("\nP-8: read 200 msgs cacheadas");
+  const db8 = await getDb(++dbN);
+  await writeMessages(db8, 1, 1, makeMsgs(200));
+  results.push(await measure("P-8 getMessages (200)", () => readMessages(db8, 1, 1)));
+
+  // P-9: read 1000 msgs (limite extremo)
+  log("\nP-9: read 1.000 msgs cacheadas");
+  const db9 = await getDb(++dbN);
+  await writeMessages(db9, 1, 1, makeMsgs(1000));
+  results.push(await measure("P-9 getMessages (1000)", () => readMessages(db9, 1, 1)));
+
+  // P-10: full sync (write + immediate read) 50 msgs
+  log("\nP-10: full sync (write 50 + read 50) — 1 aba");
+  results.push(await measure("P-10 write+read 50 (1 aba)", async () => {
+    const db = await getDb(++dbN);
+    await writeMessages(db, 1, 1, makeMsgs(50));
+    await readMessages(db, 1, 1);
+  }));
+
+  // P-11: full sync 50 msgs, 2 abas simuladas (mesmo IndexedDB)
+  log("\nP-11: full sync write+read 50, 2 abas (mesmo banco)");
+  const db11 = await getDb(++dbN);
+  results.push(await measure("P-11 write+read 50 (2 abas simuladas)", async () => {
+    await writeMessages(db11, 1, 1, makeMsgs(50));
+    // Simula segunda aba lendo do mesmo banco
+    await readMessages(db11, 1, 1);
+    await readMessages(db11, 1, 1);
+  }));
+
+  // P-12: 50 conversas × 50 msgs (overhead de múltiplas conversas)
+  log("\nP-12: 50 conversas × 50 msgs — write total 2.500 entradas");
+  const db12 = await getDb(++dbN);
+  results.push(await measure("P-12 50 convs × 50 msgs (write)", async () => {
+    for (let c = 1; c <= 50; c++) {
+      await writeMessages(db12, 1, c, makeMsgs(50, c));
+    }
+  }));
+
+  log("\n=== FIM ===");
+  window.__perfResults = results;
+  window.__perfDone = true;
+}
+
+runPerf().catch(e => {
+  log("ERRO: " + e.message);
+  window.__perfDone = true;
+});
+</script>
+</body>
+</html>

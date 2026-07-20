@@ -8,6 +8,10 @@ export default defineConfig({
     testTimeout: 15_000,
     reporters: ["verbose"],
     include: ["tests/**/*.test.ts"],
+    // Sequential execution prevents timing-sensitive tests from racing with
+    // shared fake-indexeddb module state when many test files run in parallel.
+    pool: "forks",
+    poolOptions: { forks: { singleFork: true } },
   },
   resolve: {
     alias: {

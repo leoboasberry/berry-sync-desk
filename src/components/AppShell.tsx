@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { supabase } from "@/integrations/supabase/client";
+import { getSettingsConfigured } from "@/lib/chatwoot.functions";
 import { AppHeader } from "./AppHeader";
 import { Button } from "@/components/ui/button";
 import { Settings as SettingsIcon } from "lucide-react";
@@ -33,12 +34,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     (async () => {
-      const { data } = await supabase
-        .from("settings")
-        .select("chatwoot_token, hubspot_token")
-        .eq("id", 1)
-        .maybeSingle();
-      const missing = !data || (!data.chatwoot_token && !data.hubspot_token);
+      // Uses server function — tokens never reach the browser.
+      const result = await getSettingsConfigured({}).catch(() => null);
+      const missing = !result || (!result.chatwootConfigured && !result.hubspotConfigured);
       setNeedsSetup(missing);
     })();
   }, [pathname]);
