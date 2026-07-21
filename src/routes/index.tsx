@@ -2390,10 +2390,13 @@ function AtendimentoPage() {
                   {newConvPhone.trim() && newConvPhoneValidation.error && (
                     <p className="text-xs text-red-500">{newConvPhoneValidation.error}</p>
                   )}
-                  {newConvPhone.trim() && newConvPhoneValidation.normalized && (
+                  {newConvPhone.trim() && newConvPhoneValidation.normalized && !newConvPhoneValidation.warning && (
                     <p className="text-xs text-green-600">
                       Telefone válido: {formatBrazilianPhone(newConvPhoneValidation.normalized)}
                     </p>
+                  )}
+                  {newConvPhone.trim() && newConvPhoneValidation.warning && (
+                    <p className="text-xs text-amber-600">{newConvPhoneValidation.warning}</p>
                   )}
                 </div>
                 <div className="flex justify-end pt-2">

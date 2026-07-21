@@ -1,6 +1,12 @@
-// Brazilian WhatsApp phone normalization and validation.
+// Brazilian phone normalization and validation.
 // Single source of truth — used by both client (index.tsx) and server (chatwoot.functions.ts).
-// normalized output: 13 digits, no +, no spaces: 55 + DDD + 9-digit mobile.
+//
+// Accepted formats:
+//   13 digits: 55 + 2-digit DDD + 9-digit mobile  → returned as-is
+//   12 digits: 55 + 2-digit DDD + 8-digit landline → accepted without modification
+//
+// The 9-digit-insertion heuristic is intentionally absent: an 8-digit number may be
+// a valid landline and must never be silently altered.
 
 const VALID_DDDS = new Set([
   11, 12, 13, 14, 15, 16, 17, 18, 19,
@@ -17,37 +23,41 @@ const VALID_DDDS = new Set([
   91, 92, 93, 94, 95, 96, 97, 98, 99,
 ]);
 
-export function validateBrazilianPhone(raw: string): { normalized: string | null; error: string | null } {
+export interface PhoneValidation {
+  normalized: string | null;
+  error: string | null;
+  // Present when the number is valid but unusual (e.g. looks like a landline).
+  // Never blocks submission — the caller decides whether to surface it.
+  warning?: string;
+}
+
+export function validateBrazilianPhone(raw: string): PhoneValidation {
   if (!raw || !raw.trim()) {
     return { normalized: null, error: "Telefone obrigatório." };
   }
 
   let d = raw.replace(/\D/g, "");
 
-  // Remove leading zero (common typo: 0 before DDD or country code)
+  // Remove leading zero (0 before DDD or country code)
   if (d.startsWith("0")) d = d.slice(1);
 
-  // Detect duplicated country code: "5555..." where the second block is also 55
+  // Strip duplicated country code: "5555..." where the second block is also 55
   if (d.startsWith("55")) {
     const rest = d.slice(2);
-    if (rest.startsWith("55") && rest.length >= 11) {
+    if (rest.startsWith("55") && rest.length >= 10) {
       d = rest;
     }
   }
 
-  // Add country code if not present
+  // Add country code if absent
   if (!d.startsWith("55")) d = "55" + d;
 
-  // Old 8-digit mobile (12 digits total = 55 + 2 DDD + 8 number) → insert leading 9
-  if (d.length === 12) {
-    d = d.slice(0, 4) + "9" + d.slice(4);
-  }
-
-  if (d.length !== 13) {
-    const userDigits = d.length - 2;
+  // Accept 12 (landline) or 13 (mobile) digits — never add or remove digits.
+  if (d.length !== 12 && d.length !== 13) {
+    const localDigits = d.length - 2;
     return {
       normalized: null,
-      error: `Número inválido: esperados 11 dígitos (DDD + celular), recebidos ${userDigits}.`,
+      error: `Número inválido: esperados 8 ou 9 dígitos após o DDD, recebidos ${localDigits}.`,
     };
   }
 
@@ -56,20 +66,26 @@ export function validateBrazilianPhone(raw: string): { normalized: string | null
     return { normalized: null, error: `DDD ${ddd} não é válido.` };
   }
 
-  if (d[4] !== "9") {
-    return {
-      normalized: null,
-      error: "Número não parece ser celular (deve começar com 9 após o DDD).",
-    };
-  }
+  // Informational only — 8-digit numbers may be valid landlines.
+  const warning =
+    d.length === 12
+      ? "Este número possui 8 dígitos — pode ser telefone fixo ou estar faltando o nono dígito."
+      : undefined;
 
-  return { normalized: d, error: null };
+  return { normalized: d, error: null, warning };
 }
 
-// Format canonical phone for human display: 5565999231672 → +55 65 99923-1672
+// Format a normalized phone for human display.
+// 12-digit (landline): 5511XXXXXXXX  → +55 11 XXXX-XXXX
+// 13-digit (mobile):   5511XXXXXXXXX → +55 11 XXXXX-XXXX
 export function formatBrazilianPhone(normalized: string): string {
-  if (normalized.length !== 13) return normalized;
   const ddd = normalized.slice(2, 4);
   const num = normalized.slice(4);
-  return `+55 ${ddd} ${num.slice(0, 5)}-${num.slice(5)}`;
+  if (normalized.length === 13) {
+    return `+55 ${ddd} ${num.slice(0, 5)}-${num.slice(5)}`;
+  }
+  if (normalized.length === 12) {
+    return `+55 ${ddd} ${num.slice(0, 4)}-${num.slice(4)}`;
+  }
+  return normalized;
 }
