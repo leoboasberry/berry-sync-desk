@@ -37,18 +37,17 @@ async function getAgentChatwootToken(): Promise<string> {
   }
   const userId: string = claimsData.claims.sub;
 
-  // Fetch agent record using the service role (bypasses RLS)
+  // Fetch agent record using the service role (bypasses RLS).
+  // The `status` column stores presence ("online"/"away"/"offline") — not an active/inactive flag.
+  // There is no is_active field in the schema; the only gate here is chatwoot_token.
   const { data: agent, error: agentError } = await supabaseAdmin
     .from("agents")
-    .select("chatwoot_token, status, name")
+    .select("chatwoot_token")
     .eq("id", userId)
     .maybeSingle();
 
   if (agentError || !agent) {
     throw new Error("Agente não cadastrado. Solicite ao administrador.");
-  }
-  if (agent.status && agent.status !== "active") {
-    throw new Error("Agente inativo. Entre em contato com o administrador.");
   }
   if (!agent.chatwoot_token) {
     throw new Error(
