@@ -957,21 +957,40 @@ function AtendimentoPage() {
     };
 
     if (!convCacheEnabled) {
-      // Conversation cache flag is off — fetch directly without IndexedDB
-      getChatwootConversationsPage({ data: { status: tab, page: 1 } })
-        .then(({ convs: batch, total: _t }) => {
-          if (generation !== loadGenerationRef.current) return;
-          const norm = batch.map((c: any) => ({
-            ...c,
-            last_message: c.last_non_activity_message ?? c.last_message ?? null,
-          }));
-          setConversations(sortConversations(norm));
-          afterLoad(norm);
+      // Conversation cache flag is off — fetch all pages directly without IndexedDB.
+      // Uses the same page-size sentinel (< 25) as getAllChatwootConversations.
+      (async () => {
+        try {
+          const allConvs: any[] = [];
+          let page = 1;
+          while (!controller.signal.aborted) {
+            const { convs: batch } = await getChatwootConversationsPage({
+              data: { status: tab, page },
+            });
+            if (controller.signal.aborted || generation !== loadGenerationRef.current) return;
+            const norm = batch.map((c: any) => ({
+              ...c,
+              last_message: c.last_non_activity_message ?? c.last_message ?? null,
+            }));
+            allConvs.push(...norm);
+            if (batch.length < 25) break;
+            page++;
+          }
+          if (controller.signal.aborted || generation !== loadGenerationRef.current) return;
+          // Deduplicate by id in case the API repeats a conversation across pages
+          const byId = new Map<number, any>();
+          for (const c of allConvs) byId.set(c.id, c);
+          const unique = sortConversations(Array.from(byId.values()));
+          setConversations(unique);
+          afterLoad(unique);
           setLoadProgress(100);
           setTimeout(() => setLoadProgress(0), 400);
-        })
-        .catch(console.error)
-        .finally(() => { if (generation === loadGenerationRef.current) setLoadingConvs(false); });
+        } catch (err) {
+          if (generation === loadGenerationRef.current) console.error("[no-cache pagination]", err);
+        } finally {
+          if (generation === loadGenerationRef.current) setLoadingConvs(false);
+        }
+      })();
       return () => { controller.abort(); };
     }
 
