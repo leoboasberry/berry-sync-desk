@@ -27,6 +27,7 @@ import { AppShell } from "@/components/AppShell";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { cn, initialsOf, timeAgo } from "@/lib/utils";
+import { validateBrazilianPhone, formatBrazilianPhone } from "@/lib/phone";
 import {
   getChatwootConversations,
   getChatwootConversationsPage,
@@ -417,6 +418,8 @@ function AtendimentoPage() {
   const [cacheUserId, setCacheUserId] = useState<string | null>(null);
   const lifecycleRef = useRef<CacheLifecycle | null>(null);
   const loadGenerationRef = useRef(0);
+  // Tracks conversations inserted optimistically (before Chatwoot confirms them in API responses).
+  const optimisticConvsRef = useRef(new Map<number, any>());
 
   // Refs kept in sync with state — used inside callbacks/intervals/polls
   // to read current values without depending on stale closure captures.
@@ -673,7 +676,7 @@ function AtendimentoPage() {
             ...c,
             last_message: c.last_non_activity_message ?? c.last_message ?? null,
           })));
-          setConversations(normalized);
+          setConversations(mergeWithOptimistic(normalized));
           try {
             localStorage.setItem(`berry_convs_${pollTab}`, JSON.stringify({ convs: normalized, ts: Date.now() }));
           } catch {}
@@ -939,7 +942,7 @@ function AtendimentoPage() {
           // Deduplicate by id in case the API repeats a conversation across pages
           const byId = new Map<number, any>();
           for (const c of allConvs) byId.set(c.id, c);
-          const unique = sortConversations(Array.from(byId.values()));
+          const unique = mergeWithOptimistic(sortConversations(Array.from(byId.values())));
           setConversations(unique);
           afterLoad(unique);
           setLoadProgress(100);
@@ -1447,8 +1450,9 @@ function AtendimentoPage() {
     try {
       await updateChatwootConversationStatus({ data: { conversationId: activeId, status } });
       const updated = await getChatwootConversations({ data: { status: tab } });
-      setConversations(updated);
-      setActiveId(updated[0]?.id ?? null);
+      const merged = mergeWithOptimistic(updated);
+      setConversations(merged);
+      setActiveId(merged[0]?.id ?? null);
     } catch (e) {
       console.error(e);
     }
@@ -1469,6 +1473,24 @@ function AtendimentoPage() {
       return t.name.toLowerCase().includes(q) || getTplBody(t).toLowerCase().includes(q);
     });
   }, [templatesList, newConvTplSearch]);
+
+  // Real-time phone validation for the "Novo contato" modal.
+  const newConvPhoneValidation = useMemo(
+    () => (newConvPhone.trim() ? validateBrazilianPhone(newConvPhone) : { normalized: null, error: null }),
+    [newConvPhone]
+  );
+
+  // Merge remote conversations with any optimistic ones not yet confirmed by the API.
+  function mergeWithOptimistic(remote: any[]): any[] {
+    if (optimisticConvsRef.current.size === 0) return remote;
+    const remoteIds = new Set(remote.map((c: any) => c.id));
+    for (const id of optimisticConvsRef.current.keys()) {
+      if (remoteIds.has(id)) optimisticConvsRef.current.delete(id);
+    }
+    if (optimisticConvsRef.current.size === 0) return remote;
+    const pending = Array.from(optimisticConvsRef.current.values()).filter((c: any) => !remoteIds.has(c.id));
+    return sortConversations([...pending, ...remote]);
+  }
 
   async function ensureTemplatesLoaded() {
     if (templatesList.length > 0 || templatesLoading) return;
@@ -1496,28 +1518,58 @@ function AtendimentoPage() {
 
   async function handleStartNewConversation() {
     if (!newConvTemplate) return;
+    const phoneVal = validateBrazilianPhone(newConvPhone);
+    if (!phoneVal.normalized) {
+      setNewConvError(phoneVal.error ?? "Telefone inválido.");
+      return;
+    }
     setNewConvLoading(true);
     setNewConvError("");
     try {
       let body = getTplBody(newConvTemplate);
       newConvVars.forEach((v, i) => { body = body.replaceAll(`{{${i + 1}}}`, v); });
-      await startConversationWithTemplate({
+      const result = await startConversationWithTemplate({
         data: {
-          phone: newConvPhone,
+          phone: phoneVal.normalized,
           contactName: newConvName,
           templateName: newConvTemplate.name,
           templateParams: newConvVars,
           language: newConvTemplate.language,
           category: newConvTemplate.category,
           templateBody: body,
-          // assigneeEmail removed — agent identity resolved server-side from auth session
         },
       });
+
+      const conversationId = result.conversationId;
+
+      // Fetch the full conversation object and insert it optimistically so it
+      // stays visible during subsequent polling/reloads until Chatwoot confirms it.
+      let fullConv: any = null;
+      try {
+        fullConv = await getChatwootConversationById({ data: { conversationId } });
+      } catch { /* non-fatal */ }
+
+      if (fullConv) {
+        fullConv = {
+          ...fullConv,
+          last_message: fullConv.last_non_activity_message ?? fullConv.last_message ?? null,
+          last_activity_at: fullConv.last_activity_at ?? Math.floor(Date.now() / 1000),
+        };
+        optimisticConvsRef.current.set(conversationId, fullConv);
+        setConversations((prev) => {
+          const without = prev.filter((c: any) => c.id !== conversationId);
+          return sortConversations([fullConv, ...without]);
+        });
+      }
+
       setNewConvModal(false);
-      const updated = await getChatwootConversations({ data: { status: "open" } });
-      setConversations(updated);
       if (tab !== "open") setTab("open");
-      if (updated.length > 0) setActiveId(updated[0].id);
+      setActiveId(conversationId);
+      if (fullConv?.meta?.sender?.phone_number) {
+        setActivePhone(normalizePhone(fullConv.meta.sender.phone_number));
+      } else {
+        setActivePhone(phoneVal.normalized);
+      }
     } catch (e: any) {
       setNewConvError(e?.message ?? "Erro ao iniciar conversa");
     } finally {
@@ -2318,20 +2370,35 @@ function AtendimentoPage() {
                   <input
                     value={newConvPhone}
                     onChange={(e) => setNewConvPhone(e.target.value)}
-                    placeholder="+55 11 99999-9999"
+                    placeholder="+55 65 99923-1672"
                     type="tel"
-                    className="h-10 w-full rounded-lg border border-[#e5e5e5] dark:border-[#2a2a2a] px-3 text-sm focus:outline-none focus:ring-1 focus:ring-[#090909] dark:focus:ring-[#888]"
+                    className={cn(
+                      "h-10 w-full rounded-lg border px-3 text-sm focus:outline-none focus:ring-1",
+                      newConvPhone.trim() && newConvPhoneValidation.error
+                        ? "border-red-400 focus:ring-red-400"
+                        : newConvPhone.trim() && newConvPhoneValidation.normalized
+                        ? "border-green-500 focus:ring-green-500"
+                        : "border-[#e5e5e5] dark:border-[#2a2a2a] focus:ring-[#090909] dark:focus:ring-[#888]"
+                    )}
                     onKeyDown={(e) => {
-                      if (e.key === "Enter" && newConvName.trim() && newConvPhone.trim()) {
+                      if (e.key === "Enter" && newConvName.trim() && newConvPhoneValidation.normalized) {
                         setNewConvStep("template");
                         ensureTemplatesLoaded();
                       }
                     }}
                   />
+                  {newConvPhone.trim() && newConvPhoneValidation.error && (
+                    <p className="text-xs text-red-500">{newConvPhoneValidation.error}</p>
+                  )}
+                  {newConvPhone.trim() && newConvPhoneValidation.normalized && (
+                    <p className="text-xs text-green-600">
+                      Telefone válido: {formatBrazilianPhone(newConvPhoneValidation.normalized)}
+                    </p>
+                  )}
                 </div>
                 <div className="flex justify-end pt-2">
                   <button
-                    disabled={!newConvName.trim() || !newConvPhone.trim()}
+                    disabled={!newConvName.trim() || !newConvPhoneValidation.normalized}
                     onClick={() => { setNewConvStep("template"); ensureTemplatesLoaded(); }}
                     className="rounded-lg bg-[#090909] px-5 py-2 text-sm font-medium text-white hover:bg-[#090909]/90 disabled:cursor-not-allowed disabled:opacity-40"
                   >
@@ -2416,7 +2483,11 @@ function AtendimentoPage() {
                     </div>
                     <div>
                       <div className="text-[10px] font-semibold uppercase tracking-wider text-[#999] dark:text-[#686868]">Telefone</div>
-                      <div className="text-[#090909] dark:text-[#e8e8e8]">{newConvPhone}</div>
+                      <div className="text-[#090909] dark:text-[#e8e8e8]">
+                        {newConvPhoneValidation.normalized
+                          ? formatBrazilianPhone(newConvPhoneValidation.normalized)
+                          : newConvPhone}
+                      </div>
                     </div>
                   </div>
 

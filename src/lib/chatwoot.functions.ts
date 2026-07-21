@@ -2,6 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
+import { validateBrazilianPhone } from "@/lib/phone";
 
 /**
  * Resolves the Chatwoot token for the currently authenticated agent.
@@ -638,14 +639,14 @@ export const startConversationWithTemplate = createServerFn({ method: "POST" })
     const [s, agentToken] = await Promise.all([getChatwootSettings(), getAgentChatwootToken()]);
     const inboxId = await getWhatsAppInboxId(s);
 
-    // Normalize phone: strip spaces/dashes/parens, ensure leading +
-    const normalizedPhone = (() => {
-      const digitsAndPlus = data.phone.replace(/[^\d+]/g, "");
-      const pure = digitsAndPlus.replace(/\+/g, "");
-      return `+${pure}`;
-    })();
-
-    const digits = normalizedPhone.replace(/\D/g, "");
+    // Validate and normalize phone server-side — never trust the frontend value alone.
+    const phoneVal = validateBrazilianPhone(data.phone);
+    if (!phoneVal.normalized) {
+      throw new Error(`Telefone inválido: ${phoneVal.error}`);
+    }
+    // Chatwoot expects phone numbers with + prefix for contact search and creation.
+    const normalizedPhone = `+${phoneVal.normalized}`;
+    const digits = phoneVal.normalized;
     const last9 = digits.slice(-9);
 
     // Helper: extract contact id from Chatwoot search response (v2 and v3 formats)
