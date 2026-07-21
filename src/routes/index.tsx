@@ -364,6 +364,9 @@ function AtendimentoPage() {
   const [ownerCacheReady, setOwnerCacheReady] = useState(false);
   const [myRole, setMyRole] = useState<"admin" | "agent" | null>(null);
   const [myChatwootAgentId, setMyChatwootAgentId] = useState<number | null>(null);
+  // True once role + chatwootAgentId are resolved (all code paths, including errors).
+  // Guards displayedConversations so agents never see unfiltered conversations.
+  const [agentContextReady, setAgentContextReady] = useState(false);
   const [chatwootAccountId, setChatwootAccountId] = useState<number | null>(null);
   const [attachFile, setAttachFile] = useState<AttachFile | null>(null);
   const [recording, setRecording] = useState(false);
@@ -687,7 +690,10 @@ function AtendimentoPage() {
   useEffect(() => {
     (async () => {
       const { data: u } = await supabase.auth.getUser();
-      if (!u.user) return;
+      if (!u.user) {
+        setAgentContextReady(true); // unauthenticated — nothing to resolve
+        return;
+      }
       setCacheUserId(u.user.id); // needed to scope IndexedDB
       const { data } = await supabase.from("agents").select("name, role, email, hubspot_owner_id").eq("id", u.user.id).maybeSingle();
       if (data?.name) setAgentName(data.name);
@@ -704,8 +710,11 @@ function AtendimentoPage() {
           if (match) setMyChatwootAgentId(match.id);
         } catch (e) {
           console.error(e);
+          // error resolving agent id — mark ready so UI doesn't hang;
+          // displayedConversations will return [] for agents with null id
         }
       }
+      setAgentContextReady(true); // admin or agent, success or caught error
     })();
     // Carrega chatwoot_account_id para filtrar subscription Realtime por tenant (B06)
     Promise.resolve(supabase.from("settings").select("chatwoot_account_id").eq("id", 1).maybeSingle())
@@ -790,6 +799,9 @@ function AtendimentoPage() {
   }, [search]);
 
   const displayedConversations = useMemo(() => {
+    // Block rendering until role + chatwootAgentId are resolved.
+    // Prevents agents from seeing unfiltered conversations during load.
+    if (!agentContextReady) return [];
     let result = conversations;
     // Agents see only their own + unassigned Chatwoot conversations.
     // Chatwoot assignee is the source of truth for operational visibility.
@@ -798,8 +810,10 @@ function AtendimentoPage() {
         (c) => !c.meta?.assignee?.id || c.meta?.assignee?.id === myChatwootAgentId
       );
     }
+    // Agent with unresolved chatwoot id (error path): show empty list, not all conversations.
+    if (myRole === "agent" && myChatwootAgentId === null) return [];
     return result;
-  }, [conversations, myRole, myChatwootAgentId]);
+  }, [conversations, myRole, myChatwootAgentId, agentContextReady]);
 
   // Group conversations by normalized phone — one entry per contact in the sidebar
   const groupedConversations = useMemo(() => {
@@ -1707,7 +1721,7 @@ function AtendimentoPage() {
         </div>
 
         <div className="flex-1 overflow-y-auto">
-          {loadingConvs && conversations.length === 0 || searchLoading ? (
+          {!agentContextReady || loadingConvs && conversations.length === 0 || searchLoading ? (
             <div className="flex h-full items-center justify-center">
               <Loader2 className="h-5 w-5 animate-spin text-[#999] dark:text-[#686868]" />
             </div>
