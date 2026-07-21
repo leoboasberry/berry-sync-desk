@@ -1,5 +1,62 @@
 import { createServerFn } from "@tanstack/react-start";
+import { getRequest } from "@tanstack/react-start/server";
+import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
+
+/**
+ * Resolves the Chatwoot token for the currently authenticated agent.
+ *
+ * Flow:
+ *  1. Extract the Bearer token from the Authorization header (injected by
+ *     the global `attachSupabaseAuth` client middleware).
+ *  2. Validate the token against Supabase to get the authenticated user id.
+ *  3. Look up the `agents` table for that user id.
+ *  4. Return `chatwoot_token` — or throw a descriptive error if absent.
+ *
+ * Never trusts any value provided by the frontend.
+ * Never falls back to the global settings token for human-initiated sends.
+ */
+async function getAgentChatwootToken(): Promise<string> {
+  const request = getRequest();
+  const authHeader = request?.headers?.get("authorization") ?? "";
+  if (!authHeader.startsWith("Bearer ")) {
+    throw new Error("Sessão não encontrada. Faça login novamente.");
+  }
+  const accessToken = authHeader.slice("Bearer ".length);
+
+  // Validate JWT and extract user id via a user-scoped Supabase client
+  const SUPABASE_URL = process.env.SUPABASE_URL!;
+  const SUPABASE_PUBLISHABLE_KEY = process.env.SUPABASE_PUBLISHABLE_KEY!;
+  const userClient = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
+    global: { headers: { Authorization: `Bearer ${accessToken}` } },
+    auth: { storage: undefined, persistSession: false, autoRefreshToken: false },
+  });
+  const { data: claimsData, error: claimsError } = await (userClient.auth as any).getClaims(accessToken);
+  if (claimsError || !claimsData?.claims?.sub) {
+    throw new Error("Sessão inválida ou expirada. Faça login novamente.");
+  }
+  const userId: string = claimsData.claims.sub;
+
+  // Fetch agent record using the service role (bypasses RLS)
+  const { data: agent, error: agentError } = await supabaseAdmin
+    .from("agents")
+    .select("chatwoot_token, status, name")
+    .eq("id", userId)
+    .maybeSingle();
+
+  if (agentError || !agent) {
+    throw new Error("Agente não cadastrado. Solicite ao administrador.");
+  }
+  if (agent.status && agent.status !== "active") {
+    throw new Error("Agente inativo. Entre em contato com o administrador.");
+  }
+  if (!agent.chatwoot_token) {
+    throw new Error(
+      "Token Chatwoot individual não configurado para este agente. Solicite ao administrador."
+    );
+  }
+  return agent.chatwoot_token;
+}
 
 export const testChatwootConnection = createServerFn({ method: "POST" })
   .inputValidator((data: { url: string; token: string }) => data)
@@ -270,13 +327,13 @@ export const backfillContactHistory = createServerFn({ method: "POST" })
 export const sendChatwootMessage = createServerFn({ method: "POST" })
   .inputValidator((data: { conversationId: number; content: string }) => data)
   .handler(async ({ data }) => {
-    const s = await getChatwootSettings();
+    const [s, agentToken] = await Promise.all([getChatwootSettings(), getAgentChatwootToken()]);
     const res = await fetch(
       `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/conversations/${data.conversationId}/messages`,
       {
         method: "POST",
         headers: {
-          api_access_token: s.chatwoot_token!,
+          api_access_token: agentToken,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({ content: data.content, message_type: "outgoing" }),
@@ -296,12 +353,12 @@ export const sendChatwootTemplate = createServerFn({ method: "POST" })
     templateParams: string[];
   }) => data)
   .handler(async ({ data }) => {
-    const s = await getChatwootSettings();
+    const [s, agentToken] = await Promise.all([getChatwootSettings(), getAgentChatwootToken()]);
     const res = await fetch(
       `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/conversations/${data.conversationId}/messages`,
       {
         method: "POST",
-        headers: { api_access_token: s.chatwoot_token!, "Content-Type": "application/json" },
+        headers: { api_access_token: agentToken, "Content-Type": "application/json" },
         body: JSON.stringify({
           content: data.templateBody,
           message_type: "outgoing",
@@ -575,10 +632,11 @@ export const startConversationWithTemplate = createServerFn({ method: "POST" })
     language: string;
     category: string;
     templateBody: string;
-    assigneeEmail?: string;
   }) => data)
   .handler(async ({ data }) => {
-    const s = await getChatwootSettings();
+    // Resolve the authenticated agent's Chatwoot token server-side.
+    // assigneeEmail is no longer trusted from the frontend.
+    const [s, agentToken] = await Promise.all([getChatwootSettings(), getAgentChatwootToken()]);
     const inboxId = await getWhatsAppInboxId(s);
 
     // Normalize phone: strip spaces/dashes/parens, ensure leading +
@@ -702,12 +760,14 @@ export const startConversationWithTemplate = createServerFn({ method: "POST" })
     }
     const conversationId = conv!.id;
 
-    // Send template message
+    // Send template message using the authenticated agent's token.
+    // Chatwoot registers the sender by token owner — this ensures Renata/Eloiza
+    // appear as sender, not the global admin token owner.
     const msgRes = await fetch(
       `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/conversations/${conversationId}/messages`,
       {
         method: "POST",
-        headers: { api_access_token: s.chatwoot_token!, "Content-Type": "application/json" },
+        headers: { api_access_token: agentToken, "Content-Type": "application/json" },
         body: JSON.stringify({
           content: data.templateBody,
           message_type: "outgoing",
@@ -728,22 +788,30 @@ export const startConversationWithTemplate = createServerFn({ method: "POST" })
       throw new Error(`Chatwoot send template error: ${msgRes.status} — ${errBody.slice(0, 400)}`);
     }
 
-    // Auto-assign conversation to the agent who started it
-    if (data.assigneeEmail) {
-      const agentsRes = await fetch(
-        `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/agents`,
-        { headers: { api_access_token: s.chatwoot_token! } }
+    // Assign conversation to the authenticated agent (resolved server-side).
+    // Uses the global admin token for the assignment API call (admin operation, not a human send).
+    // The agent's email is resolved from the Chatwoot agents list by matching token owner.
+    const agentsRes = await fetch(
+      `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/agents`,
+      { headers: { api_access_token: s.chatwoot_token! } }
+    );
+    if (agentsRes.ok) {
+      const chatwootAgents: { id: number; email: string }[] = await agentsRes.json();
+      // Identify agent by their own token: fetch /profile with the agent token
+      const profileRes = await fetch(
+        `${s.url}/api/v1/profile`,
+        { headers: { api_access_token: agentToken } }
       );
-      if (agentsRes.ok) {
-        const agents: { id: number; email: string }[] = await agentsRes.json();
-        const match = agents.find((a) => a.email === data.assigneeEmail);
-        if (match) {
+      if (profileRes.ok) {
+        const profile = await profileRes.json();
+        const agentChatwootId: number | undefined = profile.id;
+        if (agentChatwootId && chatwootAgents.some((a) => a.id === agentChatwootId)) {
           await fetch(
             `${s.url}/api/v1/accounts/${s.chatwoot_account_id}/conversations/${conversationId}/assignments`,
             {
               method: "POST",
               headers: { api_access_token: s.chatwoot_token!, "Content-Type": "application/json" },
-              body: JSON.stringify({ assignee_id: match.id }),
+              body: JSON.stringify({ assignee_id: agentChatwootId }),
             }
           );
         }

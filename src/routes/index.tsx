@@ -1553,7 +1553,6 @@ function AtendimentoPage() {
     setNewConvLoading(true);
     setNewConvError("");
     try {
-      const { data: u } = await supabase.auth.getUser();
       let body = getTplBody(newConvTemplate);
       newConvVars.forEach((v, i) => { body = body.replaceAll(`{{${i + 1}}}`, v); });
       await startConversationWithTemplate({
@@ -1565,7 +1564,7 @@ function AtendimentoPage() {
           language: newConvTemplate.language,
           category: newConvTemplate.category,
           templateBody: body,
-          assigneeEmail: u.user?.email,
+          // assigneeEmail removed — agent identity resolved server-side from auth session
         },
       });
       setNewConvModal(false);

@@ -112,7 +112,7 @@ function TemplateModal({
           language: selected.language ?? "pt_BR",
           category: selected.category ?? "MARKETING",
           templateBody: body,
-          assigneeEmail: agentEmail,
+          // assigneeEmail removed — agent identity resolved server-side from auth session
         },
       });
       onStarted(conversationId);
