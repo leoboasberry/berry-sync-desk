@@ -55,8 +55,6 @@ import {
   getHubSpotContactNotes,
   createHubSpotNote,
   getHubSpotOwners,
-  upsertContactOwnerCache,
-  getContactOwnersBatch,
   DEFAULT_HS_FIELDS,
   type HsField,
 } from "@/lib/hubspot.functions";
@@ -360,8 +358,6 @@ function AtendimentoPage() {
   const [agentName, setAgentName] = useState("");
   const [agentEmail, setAgentEmail] = useState("");
   const [myHubspotOwnerId, setMyHubspotOwnerId] = useState<string | null>(null);
-  const [ownerCache, setOwnerCache] = useState<Record<string, string | null>>({}); // phone → hubspot_owner_id | null
-  const [ownerCacheReady, setOwnerCacheReady] = useState(false);
   const [myRole, setMyRole] = useState<"admin" | "agent" | null>(null);
   const [myChatwootAgentId, setMyChatwootAgentId] = useState<number | null>(null);
   // True once role + chatwootAgentId are resolved (all code paths, including errors).
@@ -869,7 +865,6 @@ function AtendimentoPage() {
         const { convs: cachedConvs, ts } = JSON.parse(cached);
         if (Date.now() - ts < 5 * 60_000 && Array.isArray(cachedConvs)) {
           setConversations(cachedConvs);
-          setOwnerCacheReady(true);
         }
       }
     } catch {}
@@ -879,7 +874,7 @@ function AtendimentoPage() {
     setActiveId(null);
     setActivePhone(null);
     setMessages([]);
-    setOwnerCacheReady(false);
+
 
     const controller = new AbortController();
     const allNormalized: any[] = [];
@@ -889,51 +884,6 @@ function AtendimentoPage() {
       if (generation !== loadGenerationRef.current) return;
       // Persist fresh conversations to localStorage (read-only fallback path)
       try { localStorage.setItem(cacheKey, JSON.stringify({ convs: normalized, ts: Date.now() })); } catch {}
-      // Batch-load owner cache
-      const phones = [...new Set(
-        normalized.map((c: any) => normalizePhone(c.meta?.sender?.phone_number)).filter(Boolean)
-      )] as string[];
-      if (phones.length) {
-        getContactOwnersBatch({ data: { phones } })
-          .then((rows) => {
-            if (generation !== loadGenerationRef.current) return;
-            const cachedSet = new Set(rows.map((r) => r.phone));
-            setOwnerCache((prev) => {
-              const next = { ...prev };
-              for (const r of rows) next[r.phone] = r.hubspot_owner_id;
-              return next;
-            });
-            setOwnerCacheReady(true);
-            const uncached = phones.filter((p) => !cachedSet.has(p));
-            if (uncached.length) {
-              const runPreload = async () => {
-                const collected: Record<string, string | null> = {};
-                for (const phone of uncached) {
-                  if (generation !== loadGenerationRef.current) return;
-                  try {
-                    const contact = await getHubSpotContactByPhone({
-                      data: { phone, properties: ["hubspot_owner_id"] },
-                    });
-                    collected[phone] = contact?.properties?.hubspot_owner_id ?? null;
-                  } catch (e) {
-                    console.error("owner preload error", phone, e);
-                    collected[phone] = null;
-                  }
-                }
-                if (generation !== loadGenerationRef.current) return;
-                setOwnerCache((prev) => ({ ...prev, ...collected }));
-                for (const [phone, ownerId] of Object.entries(collected)) {
-                  upsertContactOwnerCache({ data: { phone, hubspot_owner_id: ownerId } }).catch(console.error);
-                }
-              };
-              runPreload();
-            }
-          })
-          .catch(() => { if (generation === loadGenerationRef.current) setOwnerCacheReady(true); });
-      } else {
-        setOwnerCacheReady(true);
-      }
-
       const pending = pendingConversationIdRef.current;
       if (pending) {
         const found = normalized.find((c: any) => c.id === pending);
@@ -1228,10 +1178,6 @@ function AtendimentoPage() {
         .then((contact) => {
           setHubContact(contact);
           prevHubPropsRef.current = contact?.properties ?? {};
-          // Update owner cache for this phone so the sidebar filter stays accurate
-          const ownerId = contact?.properties?.hubspot_owner_id ?? null;
-          setOwnerCache((prev) => ({ ...prev, [phone]: ownerId }));
-          upsertContactOwnerCache({ data: { phone, hubspot_owner_id: ownerId } }).catch(console.error);
         })
         .catch(console.error)
         .finally(() => setHubLoading(false));
