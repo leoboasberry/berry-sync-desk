@@ -356,6 +356,9 @@ function AtendimentoPage() {
   const [loadProgress, setLoadProgress] = useState(0); // 0–100, shown while loading
   const [loadingMsgs, setLoadingMsgs] = useState(false);
   const [sending, setSending] = useState(false);
+  // Ref-based guard prevents concurrent sends triggered by rapid clicks or Enter
+  // before the next render flips the button to disabled.
+  const isSendingRef = useRef(false);
   const [agentName, setAgentName] = useState("");
   const [agentEmail, setAgentEmail] = useState("");
   const [myHubspotOwnerId, setMyHubspotOwnerId] = useState<string | null>(null);
@@ -1388,60 +1391,116 @@ function AtendimentoPage() {
   }
 
   async function handleSend() {
+    // Ref-based guard: prevents a second send triggered by rapid clicks or
+    // Enter key before the next render flips the button to disabled.
+    if (isSendingRef.current) return;
     if (!activeId) return;
+
     const text = draft.trim();
     if (!text && !attachFile) return;
+
+    // can_reply guard — re-checked at call time to avoid relying on stale UI state.
+    const activeConv = conversations.find((c) => c.id === activeId);
+    if (!draftIsTemplate && activeConv?.can_reply === false && activeConv?.status === "open") return;
+
+    // Snapshot mutable values so secondary async ops below use the correct conv.
+    const requestedConvId = activeId;
 
     lastSentRef.current = Date.now();
 
     const prefix = agentName && !draftIsTemplate ? `*${agentName}*\n` : "";
     const content = text ? `${prefix}${text}` : "";
 
+    // 25-second client-side timeout: if the server hangs, the button always unlocks.
+    function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+      return Promise.race([
+        promise,
+        new Promise<T>((_, reject) =>
+          setTimeout(() => reject(new Error(`${label}: tempo limite atingido. Verifique sua conexão.`)), ms)
+        ),
+      ]);
+    }
+
+    isSendingRef.current = true;
     setSending(true);
     try {
       if (attachFile) {
         const base64 = await readFileAsBase64(attachFile.file);
-        await sendChatwootAttachment({
-          data: {
-            conversationId: activeId,
-            content,
-            fileName: attachFile.file.name,
-            mimeType: attachFile.file.type,
-            base64,
-          },
-        });
-        setAttachFile(null);
+        await withTimeout(
+          sendChatwootAttachment({
+            data: {
+              conversationId: requestedConvId,
+              content,
+              fileName: attachFile.file.name,
+              mimeType: attachFile.file.type,
+              base64,
+            },
+          }),
+          25_000,
+          "Envio de arquivo"
+        );
       } else if (draftIsTemplate && draftTemplateInfo) {
-        await sendChatwootTemplate({
-          data: {
-            conversationId: activeId,
-            templateName: draftTemplateInfo.tpl.name,
-            language: draftTemplateInfo.tpl.language ?? "pt_BR",
-            category: draftTemplateInfo.tpl.category ?? "MARKETING",
-            templateBody: content,
-            templateParams: draftTemplateInfo.params,
-          },
-        });
+        await withTimeout(
+          sendChatwootTemplate({
+            data: {
+              conversationId: requestedConvId,
+              templateName: draftTemplateInfo.tpl.name,
+              language: draftTemplateInfo.tpl.language ?? "pt_BR",
+              category: draftTemplateInfo.tpl.category ?? "MARKETING",
+              templateBody: content,
+              templateParams: draftTemplateInfo.params,
+            },
+          }),
+          25_000,
+          "Envio de template"
+        );
       } else {
-        await sendChatwootMessage({ data: { conversationId: activeId, content } });
+        await withTimeout(
+          sendChatwootMessage({ data: { conversationId: requestedConvId, content } }),
+          25_000,
+          "Envio de mensagem"
+        );
       }
+
+      // ── Success: clear input immediately, before any secondary I/O ─────────
       setDraft("");
       setDraftIsTemplate(false);
       setDraftTemplateInfo(null);
-      // Auto-assign to sender if conversation has no assignee
-      const currentConv = conversations.find((c) => c.id === activeId);
-      if (myChatwootAgentId && !currentConv?.meta?.assignee?.id) {
-        assignChatwootConversation({ data: { conversationId: activeId, assigneeId: myChatwootAgentId } }).catch(() => {});
-      }
-      const updated = await getChatwootMessages({ data: { conversationId: activeId } });
-      setMessages(updated.msgs);
-      setConversations((prev) => prev.map((c) =>
-        c.id === activeId ? { ...c, can_reply: updated.can_reply } : c
-      ));
-    } catch (e) {
-      console.error(e);
+      if (attachFile) setAttachFile(null);
+    } catch (e: any) {
+      console.error("[handleSend]", e);
+      toast.error(e?.message ?? "Erro ao enviar mensagem. Tente novamente.");
+      // Draft is preserved so the user can retry.
     } finally {
+      // Button always unlocks here — independent of any secondary operation.
       setSending(false);
+      isSendingRef.current = false;
+    }
+
+    // ── Secondary operations — fire-and-forget, never block the button ────────
+    // Auto-assign if conversation has no assignee.
+    if (myChatwootAgentId) {
+      const conv = conversations.find((c) => c.id === requestedConvId);
+      if (!conv?.meta?.assignee?.id) {
+        assignChatwootConversation({
+          data: { conversationId: requestedConvId, assigneeId: myChatwootAgentId },
+        }).catch(() => {});
+      }
+    }
+
+    // Refresh messages to pick up delivery status and can_reply — non-blocking.
+    if (activeIdRef.current === requestedConvId) {
+      getChatwootMessages({ data: { conversationId: requestedConvId } })
+        .then((updated) => {
+          if (activeIdRef.current !== requestedConvId) return; // user switched conv
+          setMessages(updated.msgs);
+          setConversations((prev) =>
+            prev.map((c) =>
+              c.id === requestedConvId ? { ...c, can_reply: updated.can_reply } : c
+            )
+          );
+        })
+        .catch(() => {}); // non-fatal: next poll will catch up
     }
   }
 
