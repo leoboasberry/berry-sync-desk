@@ -839,15 +839,10 @@ function AtendimentoPage() {
         map.set(key, merged);
       }
     }
-    // Sort: 1) unread  2) awaiting response (last msg from lead)  3) rest by activity
-    function convPriority(c: any): number {
-      if ((c.unread_count ?? 0) > 0) return 0;
-      if (c.last_message?.message_type === 0) return 1;
-      return 2;
-    }
+    // Sort purely by most recent activity — same rule as sortConversations.
+    // "Aguardando Resposta" (last_message.message_type===0) must not affect order;
+    // the visual "Em atenção" section in the render handles unread separation.
     return Array.from(map.values()).sort((a, b) => {
-      const pa = convPriority(a); const pb = convPriority(b);
-      if (pa !== pb) return pa - pb;
       // R4: deterministic tiebreaker — id DESC when last_activity_at is equal
       const byActivity = (b.last_activity_at ?? 0) - (a.last_activity_at ?? 0);
       if (byActivity !== 0) return byActivity;
