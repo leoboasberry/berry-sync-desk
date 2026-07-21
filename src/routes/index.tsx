@@ -791,24 +791,15 @@ function AtendimentoPage() {
 
   const displayedConversations = useMemo(() => {
     let result = conversations;
-    // Agents see only their own + unassigned Chatwoot conversations
+    // Agents see only their own + unassigned Chatwoot conversations.
+    // Chatwoot assignee is the source of truth for operational visibility.
     if (myRole === "agent" && myChatwootAgentId !== null) {
       result = result.filter(
         (c) => !c.meta?.assignee?.id || c.meta?.assignee?.id === myChatwootAgentId
       );
     }
-    // HubSpot owner filter: hold until cache is ready to avoid flash of wrong conversations
-    if (myHubspotOwnerId) {
-      if (!ownerCacheReady) return [];
-      result = result.filter((c) => {
-        const phone = normalizePhone(c.meta?.sender?.phone_number);
-        if (!phone || !(phone in ownerCache)) return true; // unknown — show to all
-        const owner = ownerCache[phone];
-        return owner === null || owner === myHubspotOwnerId;
-      });
-    }
     return result;
-  }, [conversations, myRole, myChatwootAgentId, myHubspotOwnerId, ownerCache, ownerCacheReady]);
+  }, [conversations, myRole, myChatwootAgentId]);
 
   // Group conversations by normalized phone — one entry per contact in the sidebar
   const groupedConversations = useMemo(() => {
